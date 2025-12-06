@@ -1,851 +1,1531 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local LocalPlayer = Players.LocalPlayer
-
--- Custom Team-Based Chams Configuration
-local ChamsConfig = {
+local baseConfig = {
     Enabled = true,
-    UseTeamColors = true,
-    TeamColor = Color3.fromRGB(0, 255, 0), -- Green for teammates
-    EnemyColor = Color3.fromRGB(255, 0, 0), -- Red for enemies
-    NeutralColor = Color3.fromRGB(255, 255, 0), -- Yellow for neutral/no team
-    FillTransparency = 0.7,
-    OutlineTransparency = 0.3,
-    MaxDistance = 500,
-    ShowNames = true,
-    NameColor = Color3.fromRGB(255, 255, 255),
-    NameSize = 14,
-    NameOffset = Vector3.new(0, 3, 0),
-    ShowTeamNames = true,
-    
-    -- Custom Team System Configuration
-    CustomTeamSystem = {
-        Enabled = true,
-        -- Add your custom team detection methods here
-        TeamValueName = "Team", -- Name of the value that stores team info
-        TeamFolderName = "Team", -- Name of folder that might contain team info
-        UseLeaderstats = true, -- Check leaderstats for team info
-    }
+    AimButton = Enum.KeyCode.LeftControl,
+    AimPart = "Head",
+    MaxDistance = 5000,
+    Prediction = 0.10,
+    Smoothing = 0.70,
+    FOV = 243,
+    UsePrediction = false,
+    TeamCheck = true,
+    ChamsEnabled = true,
+    ChamsTeamCheck = true,
+    DrawFOV = false,
+    InfiniteJumpEnabled = false,
+    SecurityDisablerEnabled = false
 }
 
--- Storage
-local PlayerChams = {}
-local LoadingMessages = {}
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInput = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
--- Function to print loading messages
-local function printStep(message)
-    local msg = "[CHAMS] " .. message
-    print(msg)
-    table.insert(LoadingMessages, msg)
+-- Global GUI variables
+local mainGui
+local GUI
+
+-- FPS Counter variables
+local FPS = 0
+local lastTime = tick()
+local frameCount = 0
+
+-- Security Disabler variables
+local SecurityDisabler = {
+    Enabled = baseConfig.SecurityDisablerEnabled,
+    LastRefresh = tick(),
+    Connections = {}
+}
+
+-- MEMORY LEAK FIX: Cleanup System
+local Connections = {}
+local function AddConnection(connection)
+    table.insert(Connections, connection)
+    return connection
 end
 
--- Function to check if a model is a player character
-local function isPlayerCharacter(model)
-    if not model:IsA("Model") then
-        return false
-    end
+local function CleanupAll()
+    print("🧹 Cleaning up memory...")
     
-    -- Check if this is any player's character
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character == model then
-            return true
+    -- Disconnect all connections
+    for _, conn in ipairs(Connections) do
+        if conn and typeof(conn) == "RBXScriptConnection" then
+            conn:Disconnect()
         end
     end
+    Connections = {}
     
-    -- Check if it has humanoid and typical player parts
-    local humanoid = model:FindFirstChildOfClass("Humanoid")
-    local head = model:FindFirstChild("Head")
-    local humanoidRootPart = model:FindFirstChild("HumanoidRootPart")
+    -- Clean up Chams
+    for player, highlight in pairs(ChamsESP.PlayerHighlights or {}) do
+        if highlight then
+            highlight:Destroy()
+        end
+    end
+    ChamsESP.PlayerHighlights = {}
     
-    if humanoid and head and humanoidRootPart then
-        return true
+    for player, nameGui in pairs(ChamsESP.PlayerNames or {}) do
+        if nameGui then
+            nameGui:Destroy()
+        end
+    end
+    ChamsESP.PlayerNames = {}
+    
+    -- Clean up Security Disabler
+    for _, conn in pairs(SecurityDisabler.Connections or {}) do
+        if conn then conn:Disconnect() end
+    end
+    SecurityDisabler.Connections = {}
+    
+    -- Clean up FOV Circle
+    if FOVCircle then
+        FOVCircle.Parent:Destroy()
+        FOVCircle = nil
     end
     
-    return false
+    -- Clean up GUI
+    if mainGui then
+        mainGui:Destroy()
+        mainGui = nil
+    end
+    
+    print("✅ Cleanup completed!")
 end
 
--- Function to get player from character model
-local function getPlayerFromCharacter(character)
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character == character then
-            return player
-        end
+-- Auto-cleanup when script stops
+AddConnection(game:GetService("ScriptContext").DescendantRemoving:Connect(function(descendant)
+    if descendant == script then
+        CleanupAll()
     end
-    return nil
+end))
+
+-- FOV Circle Drawing
+local FOVCircle = nil
+local function createFOVCircle()
+    if FOVCircle then
+        FOVCircle:Remove()
+        FOVCircle = nil
+    end
+    
+    if not baseConfig.DrawFOV then return end
+    
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    
+    local fovGui = Instance.new("ScreenGui")
+    fovGui.Name = "FOVCircleGui"
+    fovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    fovGui.IgnoreGuiInset = true
+    fovGui.ResetOnSpawn = false
+    fovGui.Parent = playerGui
+    
+    FOVCircle = Instance.new("Frame")
+    FOVCircle.Name = "FOVCircle"
+    FOVCircle.Size = UDim2.new(0, baseConfig.FOV * 2, 0, baseConfig.FOV * 2)
+    FOVCircle.Position = UDim2.new(0.5, -baseConfig.FOV, 0.5, -baseConfig.FOV)
+    FOVCircle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    FOVCircle.BackgroundTransparency = 0.8
+    FOVCircle.BorderSizePixel = 0
+    FOVCircle.ZIndex = 10
+    FOVCircle.Parent = fovGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = FOVCircle
+    
+    local outline = Instance.new("UIStroke")
+    outline.Color = Color3.fromRGB(0, 0, 0)
+    outline.Thickness = 1
+    outline.Parent = FOVCircle
 end
 
--- Function to get custom team from player
-local function getCustomTeam(player)
-    if not player or player == LocalPlayer then
-        return "LocalPlayer"
-    end
+local function updateFOVCircle()
+    if not FOVCircle then return end
     
-    -- Method 1: Check for team value in player
-    if ChamsConfig.CustomTeamSystem.TeamValueName then
-        local teamValue = player:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamValueName)
-        if teamValue and teamValue:IsA("StringValue") then
-            return teamValue.Value
-        elseif teamValue and teamValue:IsA("IntValue") then
-            return tostring(teamValue.Value)
-        elseif teamValue and teamValue:IsA("ObjectValue") and teamValue.Value then
-            return teamValue.Value.Name
+    FOVCircle.Size = UDim2.new(0, baseConfig.FOV * 2, 0, baseConfig.FOV * 2)
+    FOVCircle.Position = UDim2.new(0.5, -baseConfig.FOV, 0.5, -baseConfig.FOV)
+end
+
+-- FPS Counter function
+local function updateFPS()
+    frameCount = frameCount + 1
+    local currentTime = tick()
+    if currentTime - lastTime >= 0.5 then
+        FPS = math.floor(frameCount / (currentTime - lastTime))
+        frameCount = 0
+        lastTime = currentTime
+        
+        if GUI and GUI.UpdateFPS then
+            GUI.UpdateFPS(FPS)
         end
     end
+end
+
+-- FPS update loop
+AddConnection(RunService.Heartbeat:Connect(updateFPS))
+
+-- Infinite Jump Function
+local function SetupInfiniteJump()
+    AddConnection(UserInput.JumpRequest:Connect(function()
+        if baseConfig.InfiniteJumpEnabled then
+            local character = LocalPlayer.Character
+            if character then
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                if humanoid then
+                    humanoid:ChangeState("Jumping")
+                end
+            end
+        end
+    end))
+end
+
+-- Security Disabler Functions
+local function disableLasers()
+    if not SecurityDisabler.Enabled then return end
     
-    -- Method 2: Check leaderstats
-    if ChamsConfig.CustomTeamSystem.UseLeaderstats then
-        local leaderstats = player:FindFirstChild("leaderstats")
-        if leaderstats then
-            local teamValue = leaderstats:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamValueName or "Team")
-            if teamValue then
-                if teamValue:IsA("StringValue") then
-                    return teamValue.Value
-                elseif teamValue:IsA("IntValue") then
-                    return tostring(teamValue.Value)
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj.Name:lower():find("laser") then
+            for _, child in pairs(obj:GetDescendants()) do
+                if child:IsA("BasePart") or child:IsA("MeshPart") then
+                    child.CanTouch = false
+                    child.CanQuery = false
+                    child.Material = Enum.Material.Plastic
+                    child.Transparency = 0.3
+                end
+            end
+            
+            if obj:IsA("BasePart") or obj:IsA("MeshPart") then
+                obj.CanTouch = false
+                obj.CanQuery = false
+                obj.Material = Enum.Material.Plastic
+                obj.Transparency = 0.3
+            end
+        end
+    end
+end
+
+local function disableBarbedWire()
+    if not SecurityDisabler.Enabled then return end
+    
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj.Name:lower():find("barbedwire") then
+            if obj:IsA("BasePart") then
+                obj.CanQuery = false
+                obj.CanTouch = false
+                obj.CanCollide = false
+                obj.Material = Enum.Material.Plastic
+                obj.Transparency = 0.5
+            end
+            
+            for _, child in pairs(obj:GetDescendants()) do
+                if child:IsA("BasePart") then
+                    child.CanQuery = false
+                    child.CanTouch = false
+                    child.CanCollide = false
+                    child.Material = Enum.Material.Plastic
+                    child.Transparency = 0.5
                 end
             end
         end
     end
-    
-    -- Method 3: Check for team folder
-    if ChamsConfig.CustomTeamSystem.TeamFolderName then
-        local teamFolder = player:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamFolderName)
-        if teamFolder then
-            return teamFolder.Name
-        end
+end
+
+local function setupSecurityDisabler()
+    -- Clear existing connections
+    for _, conn in pairs(SecurityDisabler.Connections) do
+        conn:Disconnect()
     end
+    SecurityDisabler.Connections = {}
     
-    -- Method 4: Check player data (common in some games)
-    local playerData = player:FindFirstChild("Data")
-    if playerData then
-        local teamValue = playerData:FindFirstChild("Team")
-        if teamValue then
-            if teamValue:IsA("StringValue") then
-                return teamValue.Value
-            elseif teamValue:IsA("IntValue") then
-                return tostring(teamValue.Value)
+    if not SecurityDisabler.Enabled then return end
+    
+    -- Initial disable
+    disableBarbedWire()
+    disableLasers()
+    
+    -- Monitor for new objects
+    local descendantConn = Workspace.DescendantAdded:Connect(function(obj)
+        -- Handle BarbedWire objects
+        if obj.Name:lower():find("barbedwire") then
+            wait(0.1)
+            
+            if obj:IsA("BasePart") then
+                obj.CanQuery = false
+                obj.CanTouch = false
+                obj.CanCollide = false
+                obj.Material = Enum.Material.Plastic
+                obj.Transparency = 0.5
+            end
+            
+            for _, child in pairs(obj:GetDescendants()) do
+                if child:IsA("BasePart") then
+                    child.CanQuery = false
+                    child.CanTouch = false
+                    child.CanCollide = false
+                    child.Material = Enum.Material.Plastic
+                    child.Transparency = 0.5
+                end
             end
         end
-    end
+        
+        -- Handle Laser objects
+        if obj.Name:lower():find("laser") then
+            wait(0.1)
+            
+            for _, child in pairs(obj:GetDescendants()) do
+                if child:IsA("BasePart") or child:IsA("MeshPart") then
+                    child.CanTouch = false
+                    child.CanQuery = false
+                    child.Material = Enum.Material.Plastic
+                    child.Transparency = 0.3
+                end
+            end
+            
+            if obj:IsA("BasePart") or obj:IsA("MeshPart") then
+                obj.CanTouch = false
+                obj.CanQuery = false
+                obj.Material = Enum.Material.Plastic
+                obj.Transparency = 0.3
+            end
+        end
+    end)
     
-    -- Method 5: Check for specific team indicators (expand based on your game)
-    local teamIndicator = player:FindFirstChild("TeamColor")
-    if teamIndicator then
-        return "Team_" .. tostring(teamIndicator)
-    end
+    table.insert(SecurityDisabler.Connections, descendantConn)
     
-    return "No Team" -- Default if no team found
+    -- Periodic refresh
+    local heartbeatConn = RunService.Heartbeat:Connect(function()
+        if tick() - SecurityDisabler.LastRefresh > 10 then
+            SecurityDisabler.LastRefresh = tick()
+            disableBarbedWire()
+            disableLasers()
+        end
+    end)
+    
+    table.insert(SecurityDisabler.Connections, heartbeatConn)
 end
 
--- Function to check if player is on same team using custom system
-local function isTeammate(player)
-    if not player or not LocalPlayer or player == LocalPlayer then
-        return false
-    end
-    
-    if not ChamsConfig.CustomTeamSystem.Enabled then
-        return false
-    end
-    
-    local localTeam = getCustomTeam(LocalPlayer)
-    local playerTeam = getCustomTeam(player)
-    
-    -- If no teams detected, everyone is enemy
-    if localTeam == "No Team" or playerTeam == "No Team" or localTeam == "LocalPlayer" then
-        return false
-    end
-    
-    -- Check if same team
-    return localTeam == playerTeam
-end
+-- Chams ESP system with Name ESP
+local ChamsESP = {
+    Enabled = baseConfig.ChamsEnabled,
+    TeamCheck = baseConfig.ChamsTeamCheck,
+    PlayerHighlights = {},
+    PlayerNames = {},
+    Opacity = 0.2,
+    Colors = {
+        Enemy = Color3.fromRGB(255, 0, 0),
+        Team = Color3.fromRGB(0, 255, 0),
+        Neutral = Color3.fromRGB(255, 255, 0)
+    }
+}
 
--- Function to get appropriate color for player
-local function getPlayerColor(player)
-    if not ChamsConfig.UseTeamColors then
-        return ChamsConfig.EnemyColor or ChamsConfig.Color
-    end
-    
-    if not player or player == LocalPlayer then
-        return ChamsConfig.NeutralColor
-    end
-    
-    if isTeammate(player) then
-        return ChamsConfig.TeamColor
-    else
-        return ChamsConfig.EnemyColor
-    end
-end
-
--- Function to get team name for display
-local function getTeamDisplayName(player)
-    if not player then
-        return "No Team"
+local function shouldShowChams(player)
+    if not ChamsESP.Enabled then
+        return false
     end
     
     if player == LocalPlayer then
-        return "You"
-    end
-    
-    return getCustomTeam(player)
-end
-
--- Function to check if model is within distance
-local function isWithinDistance(model)
-    if not ChamsConfig.MaxDistance then
-        return true
-    end
-    
-    local localChar = LocalPlayer.Character
-    if not localChar then
         return false
     end
     
-    local localRoot = localChar:FindFirstChild("HumanoidRootPart") or localChar:FindFirstChild("Head")
-    local targetRoot = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-    
-    if not localRoot or not targetRoot then
+    if not player.Character then
         return false
     end
     
-    local distance = (localRoot.Position - targetRoot.Position).Magnitude
-    return distance <= ChamsConfig.MaxDistance
+    if ChamsESP.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+        return false
+    end
+    
+    return true
 end
 
--- Function to create name tag for a player
-local function createNameTag(model, player)
-    if not ChamsConfig.ShowNames then
-        return nil
+-- Function to create player name display
+local function createPlayerNameDisplay(player)
+    if ChamsESP.PlayerNames[player] then
+        return ChamsESP.PlayerNames[player]
     end
     
-    local head = model:FindFirstChild("Head")
-    if not head then
-        return nil
-    end
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
     
-    -- Create BillboardGui for the name tag
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ChamsNameTag_" .. player.Name
-    billboard.Adornee = head
-    billboard.Size = UDim2.new(0, 200, 0, 50)
-    billboard.StudsOffset = ChamsConfig.NameOffset
-    billboard.AlwaysOnTop = true
-    billboard.MaxDistance = ChamsConfig.MaxDistance
-    billboard.Enabled = ChamsConfig.Enabled
+    -- Create ScreenGui for the name display
+    local nameGui = Instance.new("ScreenGui")
+    nameGui.Name = "NameESP_" .. player.Name
+    nameGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    nameGui.IgnoreGuiInset = true
+    nameGui.ResetOnSpawn = false
+    nameGui.Enabled = false
+    nameGui.Parent = playerGui
     
-    -- Create TextLabel
-    local textLabel = Instance.new("TextLabel")
-    textLabel.Size = UDim2.new(1, 0, 1, 0)
-    textLabel.BackgroundTransparency = 1
-    textLabel.Text = player.Name
-    textLabel.TextColor3 = ChamsConfig.NameColor
-    textLabel.TextSize = ChamsConfig.NameSize
-    textLabel.TextStrokeTransparency = 0.5
-    textLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-    textLabel.Font = Enum.Font.GothamBold
-    textLabel.Parent = billboard
+    -- Create text label for the name
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Size = UDim2.new(0, 100, 0, 20)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    nameLabel.BackgroundTransparency = 0.5
+    nameLabel.Text = player.Name
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextSize = 12
+    nameLabel.Font = Enum.Font.Gotham
+    nameLabel.BorderSizePixel = 0
+    nameLabel.ZIndex = 10
+    nameLabel.Parent = nameGui
     
-    -- Add team name if enabled
-    if ChamsConfig.ShowTeamNames then
-        local teamLabel = Instance.new("TextLabel")
-        teamLabel.Size = UDim2.new(1, 0, 0.5, 0)
-        teamLabel.Position = UDim2.new(0, 0, 0.5, 0)
-        teamLabel.BackgroundTransparency = 1
-        teamLabel.Text = "[" .. getTeamDisplayName(player) .. "]"
-        teamLabel.TextColor3 = getPlayerColor(player)
-        teamLabel.TextSize = ChamsConfig.NameSize - 2
-        teamLabel.TextStrokeTransparency = 0.5
-        teamLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-        teamLabel.Font = Enum.Font.Gotham
-        teamLabel.Parent = billboard
-    end
+    -- Rounded corners for the name background
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = nameLabel
     
-    billboard.Parent = head
-    
-    return billboard
+    -- Store the GUI
+    ChamsESP.PlayerNames[player] = nameGui
+    return nameGui
 end
 
--- Function to create Chams for a model
-local function createChams(model)
-    if PlayerChams[model] then
-        return PlayerChams[model]
-    end
-    
-    local player = getPlayerFromCharacter(model)
-    if not player then
-        return nil
-    end
-    
-    printStep("Creating Chams for: " .. player.Name)
-    
-    -- Get appropriate color based on team
-    local chamsColor = getPlayerColor(player)
-    
-    -- Create Highlight object
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "Chams_" .. player.Name
-    highlight.Adornee = model
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.FillTransparency = ChamsConfig.FillTransparency
-    highlight.OutlineTransparency = ChamsConfig.OutlineTransparency
-    highlight.FillColor = chamsColor
-    highlight.OutlineColor = chamsColor
-    highlight.Enabled = ChamsConfig.Enabled
-    highlight.Parent = model
-    
-    -- Create name tag
-    local nameTag = createNameTag(model, player)
-    
-    PlayerChams[model] = {
-        Highlight = highlight,
-        NameTag = nameTag,
-        Model = model,
-        Player = player
-    }
-    
-    printStep("✓ Chams created for: " .. player.Name .. " (Team: " .. getTeamDisplayName(player) .. ")")
-    return PlayerChams[model]
-end
-
--- Function to update Chams colors based on team
-local function updateChamsColors()
-    for model, chamsData in pairs(PlayerChams) do
-        if chamsData.Player and ChamsConfig.UseTeamColors then
-            local newColor = getPlayerColor(chamsData.Player)
-            chamsData.Highlight.FillColor = newColor
-            chamsData.Highlight.OutlineColor = newColor
-            
-            -- Update team name color if exists
-            if chamsData.NameTag and ChamsConfig.ShowTeamNames then
-                local teamLabel = chamsData.NameTag:FindFirstChildOfClass("TextLabel")
-                if teamLabel and teamLabel.Text:find("%[.*%]") then
-                    teamLabel.TextColor3 = newColor
-                end
-            end
-        end
-    end
-end
-
--- Function to update Chams
-local function updateChams(model)
-    if not PlayerChams[model] or not ChamsConfig.Enabled then
+-- Function to update player name display position
+local function updatePlayerNameDisplay(player)
+    if not ChamsESP.PlayerNames[player] then
         return
     end
     
-    local chamsData = PlayerChams[model]
+    local nameGui = ChamsESP.PlayerNames[player]
+    local character = player.Character
     
-    -- Check if model still exists
-    if not model or not model.Parent then
-        removeChams(model)
-        return
-    end
-    
-    -- Check distance limit
-    local withinDistance = isWithinDistance(model)
-    
-    if not withinDistance then
-        chamsData.Highlight.Enabled = false
-        if chamsData.NameTag then
-            chamsData.NameTag.Enabled = false
-        end
-        return
-    end
-    
-    local humanoid = model:FindFirstChildOfClass("Humanoid")
-    
-    if humanoid then
-        -- Update based on health
-        local health = humanoid.Health
+    if character and shouldShowChams(player) then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
         
-        if health <= 0 then
-            -- Dead - make chams faint and hide name
-            chamsData.Highlight.FillTransparency = 0.9
-            chamsData.Highlight.OutlineTransparency = 0.8
-            if chamsData.NameTag then
-                chamsData.NameTag.Enabled = false
-            end
-        else
-            -- Alive - normal transparency and show name
-            chamsData.Highlight.FillTransparency = ChamsConfig.FillTransparency
-            chamsData.Highlight.OutlineTransparency = ChamsConfig.OutlineTransparency
+        if humanoid and humanoid.Health > 0 and rootPart then
+            -- Position name under feet (slightly below HumanoidRootPart)
+            local screenPos, onScreen = Camera:WorldToScreenPoint(rootPart.Position - Vector3.new(0, 3, 0))
             
-            if chamsData.NameTag then
-                chamsData.NameTag.Enabled = ChamsConfig.ShowNames and ChamsConfig.Enabled
-            end
-            
-            -- Update team colors if enabled
-            if ChamsConfig.UseTeamColors then
-                local newColor = getPlayerColor(chamsData.Player)
-                chamsData.Highlight.FillColor = newColor
-                chamsData.Highlight.OutlineColor = newColor
-            end
-            
-            -- Low health effect (only for enemies)
-            if not isTeammate(chamsData.Player) then
-                local maxHealth = humanoid.MaxHealth
-                local healthPercent = health / maxHealth
-                
-                if healthPercent < 0.3 then
-                    -- Low health - flashing effect for enemies
-                    local pulse = math.sin(tick() * 8) * 0.3 + 0.7
-                    chamsData.Highlight.FillColor = Color3.new(1, pulse, pulse)
-                    chamsData.Highlight.OutlineColor = Color3.new(1, 0.5, 0.5)
-                elseif ChamsConfig.UseTeamColors then
-                    -- Use enemy color
-                    chamsData.Highlight.FillColor = ChamsConfig.EnemyColor
-                    chamsData.Highlight.OutlineColor = ChamsConfig.EnemyColor
-                end
-            end
-        end
-        
-        chamsData.Highlight.Enabled = true
-    else
-        -- No humanoid - keep enabled with appropriate color
-        chamsData.Highlight.Enabled = true
-        if ChamsConfig.UseTeamColors then
-            local newColor = getPlayerColor(chamsData.Player)
-            chamsData.Highlight.FillColor = newColor
-            chamsData.Highlight.OutlineColor = newColor
-        else
-            chamsData.Highlight.FillColor = ChamsConfig.EnemyColor or ChamsConfig.Color
-            chamsData.Highlight.OutlineColor = ChamsConfig.EnemyColor or ChamsConfig.Color
-        end
-        if chamsData.NameTag then
-            chamsData.NameTag.Enabled = ChamsConfig.ShowNames and ChamsConfig.Enabled
-        end
-    end
-end
-
--- Function to remove Chams
-local function removeChams(model)
-    if PlayerChams[model] then
-        local playerName = PlayerChams[model].Player and PlayerChams[model].Player.Name or model.Name
-        
-        PlayerChams[model].Highlight:Destroy()
-        if PlayerChams[model].NameTag then
-            PlayerChams[model].NameTag:Destroy()
-        end
-        PlayerChams[model] = nil
-        printStep("Chams removed for: " .. playerName)
-    end
-end
-
--- Function to scan workspace for player characters
-local function scanWorkspace()
-    printStep("Scanning workspace for players...")
-    
-    local foundPlayers = 0
-    local teammates = 0
-    local enemies = 0
-    
-    -- Scan all models in workspace
-    for _, model in ipairs(Workspace:GetDescendants()) do
-        if model:IsA("Model") and isPlayerCharacter(model) then
-            if model ~= LocalPlayer.Character then -- Don't highlight self
-                local chamsData = createChams(model)
-                if chamsData then
-                    foundPlayers = foundPlayers + 1
-                    if isTeammate(chamsData.Player) then
-                        teammates = teammates + 1
+            if onScreen then
+                nameGui.Enabled = true
+                local nameLabel = nameGui:FindFirstChild("NameLabel")
+                if nameLabel then
+                    nameLabel.Position = UDim2.new(0, screenPos.X - 50, 0, screenPos.Y)
+                    
+                    -- Update color based on team
+                    if LocalPlayer.Team and player.Team then
+                        if player.Team == LocalPlayer.Team then
+                            nameLabel.TextColor3 = ChamsESP.Colors.Team
+                        else
+                            nameLabel.TextColor3 = ChamsESP.Colors.Enemy
+                        end
                     else
-                        enemies = enemies + 1
+                        nameLabel.TextColor3 = ChamsESP.Colors.Neutral
                     end
                 end
+            else
+                nameGui.Enabled = false
             end
+        else
+            nameGui.Enabled = false
         end
-    end
-    
-    printStep("Found " .. foundPlayers .. " players (" .. teammates .. " teammates, " .. enemies .. " enemies)")
-end
-
--- Function to setup player connections
-local function setupPlayerConnections()
-    -- When a player joins, wait for their character
-    Players.PlayerAdded:Connect(function(player)
-        player.CharacterAdded:Connect(function(character)
-            wait(1) -- Wait for character to fully load
-            if character ~= LocalPlayer.Character then
-                printStep("Player character added: " .. player.Name)
-                createChams(character)
-            end
-        end)
-        
-        -- Handle character removal
-        player.CharacterRemoving:Connect(function(character)
-            printStep("Player character removed: " .. player.Name)
-            removeChams(character)
-        end)
-    end)
-    
-    -- Setup existing players
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            createChams(player.Character)
-        end
-        
-        player.CharacterAdded:Connect(function(character)
-            wait(1)
-            if character ~= LocalPlayer.Character then
-                printStep("Existing player character added: " .. player.Name)
-                createChams(character)
-            end
-        end)
-        
-        player.CharacterRemoving:Connect(function(character)
-            printStep("Existing player character removed: " .. player.Name)
-            removeChams(character)
-        end)
+    else
+        nameGui.Enabled = false
     end
 end
 
--- Function to setup custom team monitoring
-local function setupCustomTeamMonitoring()
-    if not ChamsConfig.CustomTeamSystem.Enabled then
+-- Function to remove player name display
+local function removePlayerNameDisplay(player)
+    if ChamsESP.PlayerNames[player] then
+        ChamsESP.PlayerNames[player]:Destroy()
+        ChamsESP.PlayerNames[player] = nil
+    end
+end
+
+-- Function to update all name displays
+local function updateAllNameDisplays()
+    for player, nameGui in pairs(ChamsESP.PlayerNames) do
+        updatePlayerNameDisplay(player)
+    end
+end
+
+local function createPlayerHighlight(player)
+    if ChamsESP.PlayerHighlights[player] then
+        return ChamsESP.PlayerHighlights[player]
+    end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ChamsESP_" .. player.Name
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = 1 - ChamsESP.Opacity
+    highlight.OutlineTransparency = 0.3
+    highlight.Adornee = nil
+    
+    if LocalPlayer.Team and player.Team then
+        if player.Team == LocalPlayer.Team then
+            highlight.FillColor = ChamsESP.Colors.Team
+            highlight.OutlineColor = ChamsESP.Colors.Team
+        else
+            highlight.FillColor = ChamsESP.Colors.Enemy
+            highlight.OutlineColor = ChamsESP.Colors.Enemy
+        end
+    else
+        highlight.FillColor = ChamsESP.Colors.Neutral
+        highlight.OutlineColor = ChamsESP.Colors.Neutral
+    end
+    
+    ChamsESP.PlayerHighlights[player] = highlight
+    
+    -- Create name display when creating highlight
+    createPlayerNameDisplay(player)
+    
+    return highlight
+end
+
+local function updatePlayerHighlight(player)
+    if not ChamsESP.PlayerHighlights[player] then
         return
     end
     
-    printStep("Setting up custom team monitoring...")
+    local highlight = ChamsESP.PlayerHighlights[player]
+    local character = player.Character
     
-    -- Monitor all players for team changes
-    local function monitorPlayerTeam(player)
-        -- Monitor common locations for team changes
-        local locationsToMonitor = {
-            player,
-            player:FindFirstChild("leaderstats"),
-            player:FindFirstChild("Data")
-        }
-        
-        for _, location in ipairs(locationsToMonitor) do
-            if location then
-                location.ChildAdded:Connect(function(child)
-                    if child.Name == ChamsConfig.CustomTeamSystem.TeamValueName or child.Name == "Team" then
-                        wait(0.1)
-                        if player.Character and PlayerChams[player.Character] then
-                            printStep(player.Name .. " team changed to: " .. getTeamDisplayName(player))
-                            updateChamsColors()
-                        end
-                    end
-                end)
-                
-                -- Also monitor existing children
-                for _, child in ipairs(location:GetChildren()) do
-                    if child.Name == ChamsConfig.CustomTeamSystem.TeamValueName or child.Name == "Team" then
-                        if child:IsA("ValueBase") then
-                            child.Changed:Connect(function()
-                                wait(0.1)
-                                if player.Character and PlayerChams[player.Character] then
-                                    printStep(player.Name .. " team changed to: " .. getTeamDisplayName(player))
-                                    updateChamsColors()
-                                end
-                            end)
-                        end
-                    end
+    if character and shouldShowChams(player) then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            highlight.Adornee = character
+            highlight.Parent = character
+            highlight.Enabled = true
+            
+            if LocalPlayer.Team and player.Team then
+                if player.Team == LocalPlayer.Team then
+                    highlight.FillColor = ChamsESP.Colors.Team
+                    highlight.OutlineColor = ChamsESP.Colors.Team
+                else
+                    highlight.FillColor = ChamsESP.Colors.Enemy
+                    highlight.OutlineColor = ChamsESP.Colors.Enemy
                 end
+            else
+                highlight.FillColor = ChamsESP.Colors.Neutral
+                highlight.OutlineColor = ChamsESP.Colors.Neutral
             end
+        else
+            highlight.Enabled = false
+            highlight.Adornee = nil
+            highlight.Parent = nil
         end
+    else
+        highlight.Enabled = false
+        highlight.Adornee = nil
+        highlight.Parent = nil
     end
     
-    -- Setup for existing players
+    -- Update name display when updating highlight
+    updatePlayerNameDisplay(player)
+end
+
+local function removePlayerHighlight(player)
+    if ChamsESP.PlayerHighlights[player] then
+        ChamsESP.PlayerHighlights[player]:Destroy()
+        ChamsESP.PlayerHighlights[player] = nil
+    end
+    
+    -- Remove name display when removing highlight
+    removePlayerNameDisplay(player)
+end
+
+local function updateAllChams()
+    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
+        updatePlayerHighlight(player)
+    end
+end
+
+local function initializeChams()
+    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
+        highlight:Destroy()
+    end
+    ChamsESP.PlayerHighlights = {}
+    
+    -- Clear name displays
+    for player, nameGui in pairs(ChamsESP.PlayerNames) do
+        nameGui:Destroy()
+    end
+    ChamsESP.PlayerNames = {}
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
-            monitorPlayerTeam(player)
+            createPlayerHighlight(player)
+            updatePlayerHighlight(player)
         end
     end
-    
-    -- Setup for new players
-    Players.PlayerAdded:Connect(function(player)
-        monitorPlayerTeam(player)
-    end)
 end
 
--- Function to setup workspace monitoring
-local function setupWorkspaceMonitoring()
-    -- Listen for new models in workspace
-    Workspace.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("Model") then
-            wait(0.5) -- Wait for model to load
+AddConnection(Players.PlayerAdded:Connect(function(player)
+    createPlayerHighlight(player)
+    updatePlayerHighlight(player)
+    
+    AddConnection(player.CharacterAdded:Connect(function(character)
+        updatePlayerHighlight(player)
+    end))
+end))
+
+AddConnection(Players.PlayerRemoving:Connect(function(player)
+    removePlayerHighlight(player)
+end))
+
+local function setupFastCharacterMonitoring()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            AddConnection(player.CharacterAdded:Connect(function(character)
+                updatePlayerHighlight(player)
+            end))
             
-            if isPlayerCharacter(descendant) and descendant ~= LocalPlayer.Character and not PlayerChams[descendant] then
-                local player = getPlayerFromCharacter(descendant)
-                if player then
-                    printStep("New player detected: " .. player.Name)
-                    createChams(descendant)
+            AddConnection(player.CharacterRemoving:Connect(function()
+                if ChamsESP.PlayerHighlights[player] then
+                    local highlight = ChamsESP.PlayerHighlights[player]
+                    highlight.Enabled = false
+                    highlight.Adornee = nil
+                    highlight.Parent = nil
                 end
-            end
-        end
-    end)
-    
-    -- Listen for models being removed
-    Workspace.DescendantRemoving:Connect(function(descendant)
-        if descendant:IsA("Model") and PlayerChams[descendant] then
-            local player = getPlayerFromCharacter(descendant)
-            printStep("Player removed: " .. (player and player.Name or descendant.Name))
-            removeChams(descendant)
-        end
-    end)
-end
-
--- Function to initialize the Chams system
-local function initializeChams()
-    printStep("=== CUSTOM TEAM CHAMS SYSTEM ===")
-    printStep("Local Player: " .. LocalPlayer.Name)
-    printStep("Local Team: " .. getTeamDisplayName(LocalPlayer))
-    printStep("Custom Team System: " .. (ChamsConfig.CustomTeamSystem.Enabled and "ENABLED" or "DISABLED"))
-    
-    -- Clear existing Chams
-    for model, chamsData in pairs(PlayerChams) do
-        chamsData.Highlight:Destroy()
-        if chamsData.NameTag then
-            chamsData.NameTag:Destroy()
+            end))
         end
     end
-    PlayerChams = {}
-    
-    -- Setup systems
-    setupPlayerConnections()
-    setupCustomTeamMonitoring()
-    setupWorkspaceMonitoring()
-    scanWorkspace()
-    
-    printStep("Custom Team Chams system initialized!")
-    printStep("=== SYSTEM READY ===")
 end
 
--- Update all Chams in a loop
-RunService.Heartbeat:Connect(function()
-    for model, chamsData in pairs(PlayerChams) do
-        pcall(function()
-            updateChams(model)
-        end)
-    end
-end)
-
--- Auto-refresh when local player respawns
-LocalPlayer.CharacterAdded:Connect(function()
-    wait(3)
-    printStep("Player respawned - refreshing Chams...")
-end)
-
--- Initialize the system
-wait(2)
-initializeChams()
-
--- Return control functions
-return {
-    Config = ChamsConfig,
+-- Continuous name display update loop
+AddConnection(RunService.Heartbeat:Connect(function()
+    if not ChamsESP.Enabled then return end
     
-    -- Control functions
-    SetEnabled = function(state)
-        ChamsConfig.Enabled = state
-        for _, chamsData in pairs(PlayerChams) do
-            chamsData.Highlight.Enabled = state
-            if chamsData.NameTag then
-                chamsData.NameTag.Enabled = state and ChamsConfig.ShowNames
-            end
-        end
-        printStep("Chams " .. (state and "ENABLED" or "DISABLED"))
-    end,
-    
-    SetUseTeamColors = function(useTeamColors)
-        ChamsConfig.UseTeamColors = useTeamColors
-        updateChamsColors()
-        printStep("Team colors " .. (useTeamColors and "ENABLED" or "DISABLED"))
-    end,
-    
-    SetTeamColor = function(color)
-        ChamsConfig.TeamColor = color
-        if ChamsConfig.UseTeamColors then
-            updateChamsColors()
-        end
-        printStep("Team color updated")
-    end,
-    
-    SetEnemyColor = function(color)
-        ChamsConfig.EnemyColor = color
-        if ChamsConfig.UseTeamColors then
-            updateChamsColors()
-        end
-        printStep("Enemy color updated")
-    end,
-    
-    SetNeutralColor = function(color)
-        ChamsConfig.NeutralColor = color
-        if ChamsConfig.UseTeamColors then
-            updateChamsColors()
-        end
-        printStep("Neutral color updated")
-    end,
-    
-    -- Custom Team System Functions
-    SetCustomTeamEnabled = function(enabled)
-        ChamsConfig.CustomTeamSystem.Enabled = enabled
-        printStep("Custom team system " .. (enabled and "ENABLED" or "DISABLED"))
-        updateChamsColors()
-    end,
-    
-    SetTeamValueName = function(valueName)
-        ChamsConfig.CustomTeamSystem.TeamValueName = valueName
-        printStep("Team value name set to: " .. valueName)
-        updateChamsColors()
-    end,
-    
-    SetCustomTeamFunction = function(customFunction)
-        if type(customFunction) == "function" then
-            ChamsConfig.CustomTeamSystem.GetCustomTeam = customFunction
-            printStep("Custom team function set")
-            updateChamsColors()
+    for player, nameGui in pairs(ChamsESP.PlayerNames) do
+        if player and player.Parent then
+            updatePlayerNameDisplay(player)
         else
-            printStep("ERROR: Custom team function must be a function")
+            removePlayerNameDisplay(player)
         end
-    end,
+    end
+end))
+
+AddConnection(RunService.Heartbeat:Connect(function()
+    if not ChamsESP.Enabled then return end
     
-    SetMaxDistance = function(distance)
-        ChamsConfig.MaxDistance = distance
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.NameTag then
-                chamsData.NameTag.MaxDistance = distance
-            end
+    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
+        if player and player.Parent then
+            updatePlayerHighlight(player)
+        else
+            removePlayerHighlight(player)
         end
-        printStep("Max distance set to: " .. distance .. " studs")
-    end,
+    end
+end))
+
+AddConnection(LocalPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+    updateAllChams()
+    updateAllNameDisplays()
+end))
+
+-- Function to safely create GUI
+local function createModernGUI()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
     
-    SetTransparency = function(fillTrans, outlineTrans)
-        ChamsConfig.FillTransparency = fillTrans
-        ChamsConfig.OutlineTransparency = outlineTrans
+    if mainGui then
+        mainGui:Destroy()
+    end
+    
+    mainGui = Instance.new("ScreenGui")
+    mainGui.Name = "AimlockGUI"
+    mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    mainGui.IgnoreGuiInset = true
+    mainGui.DisplayOrder = 999
+    mainGui.ResetOnSpawn = false
+    mainGui.Parent = playerGui
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 320, 0, 480)
+    mainFrame.Position = UDim2.new(0, 20, 0.5, -240)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.ClipsDescendants = true
+    mainFrame.Parent = mainGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 50)
+    header.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    header.BorderSizePixel = 0
+    header.Parent = mainFrame
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 12)
+    headerCorner.Parent = header
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 1, 0)
+    title.Position = UDim2.new(0, 20, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "AKTRON IS GOATED"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 18
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = header
+
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.new(1, -20, 0, 20)
+    subtitle.Position = UDim2.new(0, 20, 0, 25)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Text = "Advanced Aim Assistance + ESP"
+    subtitle.TextColor3 = Color3.fromRGB(180, 180, 180)
+    subtitle.TextSize = 12
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextXAlignment = Enum.TextXAlignment.Left
+    subtitle.Parent = header
+
+    local closeButton = Instance.new("TextButton")
+    closeButton.Size = UDim2.new(0, 30, 0, 30)
+    closeButton.Position = UDim2.new(1, -35, 0.5, -15)
+    closeButton.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+    closeButton.BorderSizePixel = 0
+    closeButton.Text = "X"
+    closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeButton.TextSize = 14
+    closeButton.Font = Enum.Font.GothamBold
+    closeButton.Parent = header
+
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 6)
+    closeCorner.Parent = closeButton
+
+    local statusFrame = Instance.new("Frame")
+    statusFrame.Size = UDim2.new(1, -40, 0, 50)
+    statusFrame.Position = UDim2.new(0, 20, 0, 55)
+    statusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    statusFrame.BorderSizePixel = 0
+    statusFrame.Parent = mainFrame
+
+    local statusCorner = Instance.new("UICorner")
+    statusCorner.CornerRadius = UDim.new(0, 8)
+    statusCorner.Parent = statusFrame
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, -10, 0, 20)
+    statusLabel.Position = UDim2.new(0, 5, 0, 5)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Status: Ready"
+    statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    statusLabel.TextSize = 11
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    statusLabel.Parent = statusFrame
+
+    local fpsLabel = Instance.new("TextLabel")
+    fpsLabel.Size = UDim2.new(1, -10, 0, 20)
+    fpsLabel.Position = UDim2.new(0, 5, 0, 25)
+    fpsLabel.BackgroundTransparency = 1
+    fpsLabel.Text = "FPS: 0"
+    fpsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    fpsLabel.TextSize = 11
+    fpsLabel.Font = Enum.Font.Gotham
+    fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
+    fpsLabel.Parent = statusFrame
+
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Size = UDim2.new(1, 0, 1, -110)
+    contentFrame.Position = UDim2.new(0, 0, 0, 110)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Size = UDim2.new(1, 0, 1, 0)
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+    scrollFrame.ScrollBarImageTransparency = 0.5
+    scrollFrame.VerticalScrollBarInset = Enum.ScrollBarInset.Always
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 550)
+    scrollFrame.Parent = contentFrame
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 10)
+    layout.Parent = scrollFrame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 15)
+    padding.PaddingLeft = UDim.new(0, 20)
+    padding.PaddingRight = UDim.new(0, 20)
+    padding.Parent = scrollFrame
+
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
+    end)
+
+    local function createToggle(toggleLabel, defaultValue, callback)
+        local toggleFrame = Instance.new("Frame")
+        toggleFrame.Size = UDim2.new(1, 0, 0, 40)
+        toggleFrame.BackgroundTransparency = 1
+        toggleFrame.Parent = scrollFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(0.7, 0, 1, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = toggleLabel
+        labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+        labelText.TextSize = 14
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = toggleFrame
+
+        local toggleBackground = Instance.new("TextButton")
+        toggleBackground.Size = UDim2.new(0, 50, 0, 24)
+        toggleBackground.Position = UDim2.new(1, -50, 0.5, -12)
+        toggleBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        toggleBackground.BorderSizePixel = 0
+        toggleBackground.Text = ""
+        toggleBackground.AutoButtonColor = false
+        toggleBackground.Parent = toggleFrame
+
+        local toggleCorner = Instance.new("UICorner")
+        toggleCorner.CornerRadius = UDim.new(0, 12)
+        toggleCorner.Parent = toggleBackground
+
+        local toggleButton = Instance.new("Frame")
+        toggleButton.Size = UDim2.new(0, 20, 0, 20)
+        toggleButton.Position = UDim2.new(0, 2, 0.5, -10)
+        toggleButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        toggleButton.BorderSizePixel = 0
+        toggleButton.Parent = toggleBackground
+
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 10)
+        buttonCorner.Parent = toggleButton
+
+        local state = defaultValue
         
-        for _, chamsData in pairs(PlayerChams) do
-            chamsData.Highlight.FillTransparency = fillTrans
-            chamsData.Highlight.OutlineTransparency = outlineTrans
-        end
-        printStep("Transparency updated: Fill=" .. fillTrans .. ", Outline=" .. outlineTrans)
-    end,
-    
-    SetShowNames = function(show)
-        ChamsConfig.ShowNames = show
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.NameTag then
-                chamsData.NameTag.Enabled = show and ChamsConfig.Enabled
+        local function updateToggle()
+            if state then
+                toggleButton.Position = UDim2.new(1, -22, 0.5, -10)
+                toggleButton.BackgroundColor3 = Color3.fromRGB(0, 255, 127)
+                toggleBackground.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
             else
-                -- Create name tag if it doesn't exist but should
-                if show and chamsData.Player then
-                    chamsData.NameTag = createNameTag(chamsData.Model, chamsData.Player)
-                end
+                toggleButton.Position = UDim2.new(0, 2, 0.5, -10)
+                toggleButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                toggleBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
             end
+            callback(state)
         end
-        printStep("Name display " .. (show and "ENABLED" or "DISABLED"))
-    end,
-    
-    SetShowTeamNames = function(show)
-        ChamsConfig.ShowTeamNames = show
-        -- Recreate all name tags to include/remove team names
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.NameTag then
-                chamsData.NameTag:Destroy()
-            end
-            if ChamsConfig.ShowNames and chamsData.Player then
-                chamsData.NameTag = createNameTag(chamsData.Model, chamsData.Player)
-            end
-        end
-        printStep("Team name display " .. (show and "ENABLED" or "DISABLED"))
-    end,
-    
-    SetNameColor = function(color)
-        ChamsConfig.NameColor = color
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.NameTag then
-                local textLabel = chamsData.NameTag:FindFirstChildOfClass("TextLabel")
-                if textLabel and not textLabel.Text:find("%[.*%]") then
-                    textLabel.TextColor3 = color
-                end
-            end
-        end
-        printStep("Name color updated")
-    end,
-    
-    SetNameSize = function(size)
-        ChamsConfig.NameSize = size
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.NameTag then
-                for _, label in ipairs(chamsData.NameTag:GetChildren()) do
-                    if label:IsA("TextLabel") then
-                        label.TextSize = label.Text:find("%[.*%]") and size - 2 or size
-                    end
-                end
-            end
-        end
-        printStep("Name size updated to: " .. size)
-    end,
-    
-    Refresh = function()
-        printStep("Manual refresh requested...")
-        initializeChams()
-    end,
-    
-    GetStatus = function()
-        local active = 0
-        local teammates = 0
-        local enemies = 0
-        
-        for _, chamsData in pairs(PlayerChams) do
-            if chamsData.Highlight.Enabled then
-                active = active + 1
-                if isTeammate(chamsData.Player) then
-                    teammates = teammates + 1
-                else
-                    enemies = enemies + 1
-                end
-            end
-        end
-        
+
+        toggleBackground.MouseButton1Click:Connect(function()
+            state = not state
+            updateToggle()
+        end)
+
+        updateToggle()
         return {
-            TotalChams = active,
-            Teammates = teammates,
-            Enemies = enemies,
-            SystemEnabled = ChamsConfig.Enabled,
-            UseTeamColors = ChamsConfig.UseTeamColors,
-            CustomTeamEnabled = ChamsConfig.CustomTeamSystem.Enabled,
-            ShowNames = ChamsConfig.ShowNames,
-            LoadingMessages = LoadingMessages
+            SetState = function(newState) 
+                state = newState 
+                updateToggle() 
+            end
         }
-    end,
-    
-    PrintStatus = function()
-        local status = GetStatus()
-        printStep("=== SYSTEM STATUS ===")
-        printStep("Active Chams: " .. status.TotalChams)
-        printStep("Teammates: " .. status.Teammates)
-        printStep("Enemies: " .. status.Enemies)
-        printStep("System Enabled: " .. tostring(status.SystemEnabled))
-        printStep("Team Colors: " .. tostring(status.UseTeamColors))
-        printStep("Custom Team System: " .. tostring(status.CustomTeamEnabled))
-        printStep("Show Names: " .. tostring(status.ShowNames))
-        printStep("Max Distance: " .. (ChamsConfig.MaxDistance or "None"))
-        printStep("====================")
-    end,
-    
-    -- Debug function to see all current chams
-    DebugChams = function()
-        printStep("=== DEBUG CHAMS ===")
-        for model, chamsData in pairs(PlayerChams) do
-            local playerName = chamsData.Player and chamsData.Player.Name or "Unknown"
-            local teamName = chamsData.Player and getTeamDisplayName(chamsData.Player) or "No Team"
-            local enabled = chamsData.Highlight.Enabled
-            local nameTagEnabled = chamsData.NameTag and chamsData.NameTag.Enabled or false
-            local isTeammate = isTeammate(chamsData.Player)
-            printStep(playerName .. " [" .. teamName .. "] - Team: " .. tostring(isTeammate) .. ", Chams: " .. tostring(enabled) .. ", NameTag: " .. tostring(nameTagEnabled))
+    end
+
+    local function createSlider(sliderLabel, minValue, maxValue, defaultValue, callback)
+        local sliderFrame = Instance.new("Frame")
+        sliderFrame.Size = UDim2.new(1, 0, 0, 60)
+        sliderFrame.BackgroundTransparency = 1
+        sliderFrame.Parent = scrollFrame
+
+        local labelFrame = Instance.new("Frame")
+        labelFrame.Size = UDim2.new(1, 0, 0, 20)
+        labelFrame.BackgroundTransparency = 1
+        labelFrame.Parent = sliderFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(0.7, 0, 1, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = sliderLabel
+        labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+        labelText.TextSize = 14
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = labelFrame
+
+        local valueText = Instance.new("TextLabel")
+        valueText.Size = UDim2.new(0.3, 0, 1, 0)
+        valueText.Position = UDim2.new(0.7, 0, 0, 0)
+        valueText.BackgroundTransparency = 1
+        valueText.Text = tostring(defaultValue)
+        valueText.TextColor3 = Color3.fromRGB(200, 200, 200)
+        valueText.TextSize = 14
+        valueText.Font = Enum.Font.Gotham
+        valueText.TextXAlignment = Enum.TextXAlignment.Right
+        valueText.Parent = labelFrame
+
+        local sliderContainer = Instance.new("TextButton")
+        sliderContainer.Size = UDim2.new(1, 0, 0, 30)
+        sliderContainer.Position = UDim2.new(0, 0, 0, 30)
+        sliderContainer.BackgroundTransparency = 1
+        sliderContainer.Text = ""
+        sliderContainer.AutoButtonColor = false
+        sliderContainer.Parent = sliderFrame
+
+        local sliderBackground = Instance.new("Frame")
+        sliderBackground.Size = UDim2.new(1, 0, 0, 6)
+        sliderBackground.Position = UDim2.new(0, 0, 0.5, -3)
+        sliderBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+        sliderBackground.BorderSizePixel = 0
+        sliderBackground.Parent = sliderContainer
+
+        local bgCorner = Instance.new("UICorner")
+        bgCorner.CornerRadius = UDim.new(0, 3)
+        bgCorner.Parent = sliderBackground
+
+        local sliderFill = Instance.new("Frame")
+        sliderFill.Size = UDim2.new((defaultValue - minValue) / (maxValue - minValue), 0, 1, 0)
+        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 255, 127)
+        sliderFill.BorderSizePixel = 0
+        sliderFill.Parent = sliderBackground
+
+        local fillCorner = Instance.new("UICorner")
+        fillCorner.CornerRadius = UDim.new(0, 3)
+        fillCorner.Parent = sliderFill
+
+        local sliderButton = Instance.new("TextButton")
+        sliderButton.Size = UDim2.new(0, 20, 0, 20)
+        sliderButton.Position = UDim2.new((defaultValue - minValue) / (maxValue - minValue), -10, 0.5, -10)
+        sliderButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        sliderButton.BorderSizePixel = 0
+        sliderButton.Text = ""
+        sliderButton.ZIndex = 2
+        sliderButton.Parent = sliderContainer
+
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 10)
+        buttonCorner.Parent = sliderButton
+
+        local dragging = false
+        
+        local function updateSlider(value)
+            local normalized = math.clamp((value - minValue) / (maxValue - minValue), 0, 1)
+            sliderFill.Size = UDim2.new(normalized, 0, 1, 0)
+            sliderButton.Position = UDim2.new(normalized, -10, 0.5, -10)
+            valueText.Text = string.format("%.2f", value)
+            callback(value)
         end
-        printStep("===================")
-    end,
-    
-    -- Function to manually set a player's team (for testing)
-    SetPlayerTeam = function(playerName, teamName)
-        local player = Players:FindFirstChild(playerName)
-        if player then
-            -- This is just for demonstration - you'd need to implement based on your game's team system
-            printStep("NOTE: SetPlayerTeam requires implementation for your specific team system")
-            printStep("Player: " .. playerName .. ", Team: " .. teamName)
+
+        sliderButton.MouseButton1Down:Connect(function()
+            dragging = true
+        end)
+
+        sliderContainer.MouseButton1Down:Connect(function(x, y)
+            local relativeX = x - sliderBackground.AbsolutePosition.X
+            local normalized = math.clamp(relativeX / sliderBackground.AbsoluteSize.X, 0, 1)
+            local value = minValue + (maxValue - minValue) * normalized
+            updateSlider(value)
+            dragging = true
+        end)
+
+        UserInput.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+            end
+        end)
+
+        UserInput.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local mousePos = UserInput:GetMouseLocation()
+                local relativeX = mousePos.X - sliderBackground.AbsolutePosition.X
+                local normalized = math.clamp(relativeX / sliderBackground.AbsoluteSize.X, 0, 1)
+                local value = minValue + (maxValue - minValue) * normalized
+                updateSlider(value)
+            end
+        end)
+
+        updateSlider(defaultValue)
+        return {
+            SetValue = function(value) 
+                updateSlider(value) 
+            end
+        }
+    end
+
+    -- Toggles
+    local enabledToggle = createToggle("Aimlock Enabled", baseConfig.Enabled, function(state)
+        baseConfig.Enabled = state
+    end)
+
+    local teamCheckToggle = createToggle("Team Check", baseConfig.TeamCheck, function(state)
+        baseConfig.TeamCheck = state
+    end)
+
+    local predictionToggle = createToggle("Prediction", baseConfig.UsePrediction, function(state)
+        baseConfig.UsePrediction = state
+    end)
+
+    local chamsToggle = createToggle("Chams ESP", baseConfig.ChamsEnabled, function(state)
+        baseConfig.ChamsEnabled = state
+        ChamsESP.Enabled = state
+        updateAllChams()
+        updateAllNameDisplays()
+    end)
+
+    local chamsTeamToggle = createToggle("Chams Team Check", baseConfig.ChamsTeamCheck, function(state)
+        baseConfig.ChamsTeamCheck = state
+        ChamsESP.TeamCheck = state
+        updateAllChams()
+        updateAllNameDisplays()
+    end)
+
+    local drawFOVToggle = createToggle("Draw FOV Circle", baseConfig.DrawFOV, function(state)
+        baseConfig.DrawFOV = state
+        if state then
+            createFOVCircle()
         else
-            printStep("Player not found: " .. playerName)
+            if FOVCircle then
+                FOVCircle.Parent:Remove()
+                FOVCircle = nil
+            end
         end
+    end)
+
+    local infiniteJumpToggle = createToggle("Infinite Jump", baseConfig.InfiniteJumpEnabled, function(state)
+        baseConfig.InfiniteJumpEnabled = state
+    end)
+
+    local securityDisablerToggle = createToggle("Security Disabler", baseConfig.SecurityDisablerEnabled, function(state)
+        baseConfig.SecurityDisablerEnabled = state
+        SecurityDisabler.Enabled = state
+        setupSecurityDisabler()
+    end)
+
+    -- Sliders
+    local smoothingSlider = createSlider("Magnetic Strength", 0.1, 1.0, baseConfig.Smoothing, function(value)
+        baseConfig.Smoothing = value
+    end)
+
+    local predictionSlider = createSlider("Prediction Amount", 0.05, 0.3, baseConfig.Prediction, function(value)
+        baseConfig.Prediction = value
+    end)
+
+    local fovSlider = createSlider("Field of View", 30, 360, baseConfig.FOV, function(value)
+        baseConfig.FOV = value
+        updateFOVCircle()
+    end)
+
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+
+    local function updateDrag(input)
+        if not dragging then return end
+        
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale, 
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale, 
+            startPos.Y.Offset + delta.Y
+        )
+    end
+
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = mainFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInput.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            updateDrag(input)
+        end
+    end)
+
+    closeButton.MouseButton1Click:Connect(function()
+        mainGui.Enabled = false
+    end)
+
+    local controlTable = {
+        SetStatus = function(text) 
+            statusLabel.Text = "Status: " .. tostring(text)
+        end,
+        UpdateFPS = function(fps)
+            fpsLabel.Text = "FPS: " .. fps
+        end,
+        UpdateEnabled = function(state) 
+            enabledToggle.SetState(state) 
+        end,
+        UpdateTeamCheck = function(state)
+            teamCheckToggle.SetState(state)
+        end,
+        UpdatePrediction = function(state) 
+            predictionToggle.SetState(state) 
+        end,
+        UpdateSmoothing = function(value) 
+            smoothingSlider.SetValue(value) 
+        end,
+        UpdateChams = function(state)
+            chamsToggle.SetState(state)
+        end,
+        UpdateChamsTeam = function(state)
+            chamsTeamToggle.SetState(state)
+        end,
+        UpdateDrawFOV = function(state)
+            drawFOVToggle.SetState(state)
+        end,
+        UpdateInfiniteJump = function(state)
+            infiniteJumpToggle.SetState(state)
+        end,
+        UpdateSecurityDisabler = function(state)
+            securityDisablerToggle.SetState(state)
+        end,
+        ToggleVisibility = function()
+            mainGui.Enabled = not mainGui.Enabled
+        end,
+        GetGUI = function()
+            return mainGui
+        end,
+        IsValid = function()
+            return mainGui and mainGui.Parent ~= nil
+        end
+    }
+    
+    return controlTable
+end
+
+-- Function to initialize or recreate GUI
+local function ensureGUI()
+    if not GUI or not GUI.IsValid or not GUI.IsValid() then
+        GUI = createModernGUI()
+        GUI.SetStatus("GUI Initialized - Hold LeftCtrl | Press RightCtrl to hide/show")
+    end
+end
+
+-- Initialize GUI
+ensureGUI()
+
+-- Auto-recreate GUI when player respawns
+AddConnection(LocalPlayer.CharacterAdded:Connect(function()
+    wait(2)
+    ensureGUI()
+    wait(0.5)
+    initializeChams()
+    setupFastCharacterMonitoring()
+    if baseConfig.DrawFOV then
+        createFOVCircle()
+    end
+end))
+
+-- Initialize systems
+initializeChams()
+setupFastCharacterMonitoring()
+SetupInfiniteJump()
+setupSecurityDisabler()
+if baseConfig.DrawFOV then
+    createFOVCircle()
+end
+
+-- Team check function
+local function isTeammate(player)
+    if not baseConfig.TeamCheck then
+        return false
+    end
+    
+    if not LocalPlayer.Team then
+        return false
+    end
+    
+    return player.Team == LocalPlayer.Team
+end
+
+-- Enhanced death detection function
+local function isPlayerAlive(player)
+    if not player.Character then
+        return false
+    end
+    
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        return false
+    end
+    
+    -- Check health
+    if humanoid.Health <= 0 then
+        return false
+    end
+    
+    -- Check if humanoid is in a dead state
+    local humanoidState = humanoid:GetState()
+    if humanoidState == Enum.HumanoidStateType.Dead then
+        return false
+    end
+    
+    -- Additional check: if the character is falling through the map (below kill plane)
+    local rootPart = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Head")
+    if rootPart then
+        -- Most games have kill zones below -500 studs
+        if rootPart.Position.Y < -500 then
+            return false
+        end
+    end
+    
+    return true
+end
+
+-- Function to check if player is valid target (alive and not falling through map)
+local function isValidTarget(player)
+    if not player.Character then
+        return false
+    end
+    
+    if not isPlayerAlive(player) then
+        return false
+    end
+    
+    local rootPart = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Head")
+    if not rootPart then
+        return false
+    end
+    
+    -- Additional safety check: if character is too far below map
+    if rootPart.Position.Y < -1000 then
+        return false
+    end
+    
+    return true
+end
+
+-- FOV implementation
+local function findBestTarget()
+    local bestTarget = nil
+    local closestDistance = math.huge
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if not player.Character then continue end
+        
+        if isTeammate(player) then
+            continue
+        end
+        
+        -- Use enhanced target validation
+        if not isValidTarget(player) then
+            continue
+        end
+        
+        local aimPart = player.Character:FindFirstChild("Head") or 
+                       player.Character:FindFirstChild("HumanoidRootPart")
+        
+        if not aimPart then continue end
+        
+        local distance = (aimPart.Position - Camera.CFrame.Position).Magnitude
+        if distance > baseConfig.MaxDistance then continue end
+        
+        local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
+        if not onScreen then continue end
+        
+        local mousePos = UserInput:GetMouseLocation()
+        local distanceToMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        
+        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        local distanceToCenter = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        
+        if distanceToCenter > (baseConfig.FOV / 2) then
+            continue
+        end
+        
+        if distanceToMouse < closestDistance then
+            closestDistance = distanceToMouse
+            bestTarget = player
+        end
+    end
+    
+    return bestTarget
+end
+
+local function smoothAimAt(targetPos)
+    if not targetPos then return end
+    
+    local currentCFrame = Camera.CFrame
+    local targetCFrame = CFrame.new(currentCFrame.Position, targetPos)
+    
+    local magneticStrength = 1 - baseConfig.Smoothing
+    
+    local smoothedCFrame = currentCFrame:Lerp(targetCFrame, magneticStrength)
+    
+    local success, err = pcall(function()
+        Camera.CFrame = smoothedCFrame
+    end)
+    
+    if not success then
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Camera error")
+        end
+    end
+end
+
+local mouseMovementResistance = 0
+local lastMousePos = UserInput:GetMouseLocation()
+
+AddConnection(UserInput.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        local currentMousePos = UserInput:GetMouseLocation()
+        local mouseDelta = (currentMousePos - lastMousePos).Magnitude
+        lastMousePos = currentMousePos
+        
+        if mouseDelta > 5 then
+            mouseMovementResistance = math.min(mouseMovementResistance + 0.1, 1.0)
+        else
+            mouseMovementResistance = math.max(mouseMovementResistance - 0.05, 0)
+        end
+    end
+end))
+
+local isAiming = false
+local currentTarget = nil
+
+AddConnection(UserInput.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Aimlock with LeftControl
+    if input.KeyCode == baseConfig.AimButton and baseConfig.Enabled then
+        isAiming = true
+        mouseMovementResistance = 0
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Finding target...")
+        end
+    end
+    
+    -- GUI toggle with RightControl
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        if GUI and GUI.ToggleVisibility then
+            GUI.ToggleVisibility()
+        else
+            ensureGUI()
+        end
+    end
+end))
+
+AddConnection(UserInput.InputEnded:Connect(function(input, gameProcessed)
+    if input.KeyCode == baseConfig.AimButton then
+        isAiming = false
+        currentTarget = nil
+        mouseMovementResistance = 0
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Ready - Hold LeftCtrl")
+        end
+    end
+end))
+
+AddConnection(RunService.RenderStepped:Connect(function()
+    if not GUI or not GUI.IsValid or not GUI.IsValid() then
+        ensureGUI()
+    end
+    
+    if not baseConfig.Enabled or not isAiming then return end
+    
+    -- Enhanced target validation with better death detection
+    if currentTarget then
+        local isValid = isValidTarget(currentTarget)
+        
+        if not isValid then
+            if GUI and GUI.SetStatus then
+                GUI.SetStatus("Target invalid, finding new target...")
+            end
+            currentTarget = findBestTarget()
+            if currentTarget then
+                if GUI and GUI.SetStatus then
+                    GUI.SetStatus("Locked: " .. currentTarget.Name)
+                end
+            else
+                if GUI and GUI.SetStatus then
+                    GUI.SetStatus("No valid targets found")
+                end
+                return
+            end
+        end
+    end
+    
+    if not currentTarget then
+        currentTarget = findBestTarget()
+        if not currentTarget then
+            if GUI and GUI.SetStatus then
+                GUI.SetStatus("No targets found")
+            end
+            return
+        end
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Locked: " .. currentTarget.Name)
+        end
+    end
+    
+    -- Validate target
+    if not currentTarget.Character then
+        currentTarget = nil
+        return
+    end
+    
+    if baseConfig.TeamCheck and isTeammate(currentTarget) then
+        currentTarget = nil
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Target is teammate")
+        end
+        return
+    end
+    
+    -- Use enhanced validation
+    if not isValidTarget(currentTarget) then
+        currentTarget = nil
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Target died")
+        end
+        return
+    end
+    
+    local aimPart = currentTarget.Character:FindFirstChild("Head") or 
+                   currentTarget.Character:FindFirstChild("HumanoidRootPart")
+    
+    if not aimPart then
+        currentTarget = nil
+        return
+    end
+    
+    -- Additional check - if aim part is too far underground
+    if aimPart.Position.Y < -500 then
+        currentTarget = nil
+        if GUI and GUI.SetStatus then
+            GUI.SetStatus("Target underground")
+        end
+        return
+    end
+    
+    local targetPos = aimPart.Position
+    if baseConfig.UsePrediction then
+        targetPos = targetPos + (aimPart.Velocity * baseConfig.Prediction)
+    end
+    
+    local effectiveMagneticStrength = baseConfig.Smoothing
+    if mouseMovementResistance > 0.3 then
+        effectiveMagneticStrength = math.min(baseConfig.Smoothing + mouseMovementResistance, 1.0)
+    end
+    
+    local originalSmoothness = baseConfig.Smoothing
+    baseConfig.Smoothing = effectiveMagneticStrength
+    
+    smoothAimAt(targetPos)
+    
+    baseConfig.Smoothing = originalSmoothness
+    
+    if GUI and GUI.SetStatus then
+        local distance = (targetPos - Camera.CFrame.Position).Magnitude
+        local teamStatus = baseConfig.TeamCheck and " (Team Check ON)" or " (Team Check OFF)"
+        local magneticInfo = string.format(" | Magnetic: %.0f%%", (1 - baseConfig.Smoothing) * 100)
+        GUI.SetStatus("Locked: " .. currentTarget.Name .. " | " .. math.floor(distance) .. " studs" .. magneticInfo)
+    end
+end))
+
+-- Return config with GUI controls
+local config = {
+    GUI = GUI,
+    ChamsESP = ChamsESP,
+    SecurityDisabler = SecurityDisabler,
+    setEnabled = function(state) 
+        baseConfig.Enabled = state 
+        if GUI and GUI.UpdateEnabled then
+            GUI.UpdateEnabled(state)
+        end
+    end,
+    setTeamCheck = function(state)
+        baseConfig.TeamCheck = state
+        if GUI and GUI.UpdateTeamCheck then
+            GUI.UpdateTeamCheck(state)
+        end
+    end,
+    setPrediction = function(state) 
+        baseConfig.UsePrediction = state 
+        if GUI and GUI.UpdatePrediction then
+            GUI.UpdatePrediction(state)
+        end
+    end,
+    setSmoothing = function(value) 
+        baseConfig.Smoothing = value 
+        if GUI and GUI.UpdateSmoothing then
+            GUI.UpdateSmoothing(value)
+        end
+    end,
+    setChamsEnabled = function(state)
+        baseConfig.ChamsEnabled = state
+        ChamsESP.Enabled = state
+        updateAllChams()
+        updateAllNameDisplays()
+        if GUI and GUI.UpdateChams then
+            GUI.UpdateChams(state)
+        end
+    end,
+    setChamsTeamCheck = function(state)
+        baseConfig.ChamsTeamCheck = state
+        ChamsESP.TeamCheck = state
+        updateAllChams()
+        updateAllNameDisplays()
+        if GUI and GUI.UpdateChamsTeam then
+            GUI.UpdateChamsTeam(state)
+        end
+    end,
+    setDrawFOV = function(state)
+        baseConfig.DrawFOV = state
+        if state then
+            createFOVCircle()
+        else
+            if FOVCircle then
+                FOVCircle.Parent:Remove()
+                FOVCircle = nil
+            end
+        end
+        if GUI and GUI.UpdateDrawFOV then
+            GUI.UpdateDrawFOV(state)
+        end
+    end,
+    setFOV = function(value)
+        baseConfig.FOV = value
+        updateFOVCircle()
+    end,
+    setInfiniteJump = function(state)
+        baseConfig.InfiniteJumpEnabled = state
+        if GUI and GUI.UpdateInfiniteJump then
+            GUI.UpdateInfiniteJump(state)
+        end
+    end,
+    setSecurityDisabler = function(state)
+        baseConfig.SecurityDisablerEnabled = state
+        SecurityDisabler.Enabled = state
+        setupSecurityDisabler()
+        if GUI and GUI.UpdateSecurityDisabler then
+            GUI.UpdateSecurityDisabler(state)
+        end
+    end,
+    toggleGUI = function()
+        if GUI and GUI.ToggleVisibility then
+            GUI.ToggleVisibility()
+        else
+            ensureGUI()
+        end
+    end,
+    recreateGUI = function()
+        ensureGUI()
+    end,
+    cleanupMemory = function()
+        CleanupAll()
+        -- Reinitialize systems
+        initializeChams()
+        setupSecurityDisabler()
+        if baseConfig.DrawFOV then createFOVCircle() end
     end
 }
+
+return setmetatable(config, {
+    __index = baseConfig,
+    __newindex = function(t, k, v)
+        baseConfig[k] = v
+    end
+})
