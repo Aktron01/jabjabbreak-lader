@@ -1,0 +1,851 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Custom Team-Based Chams Configuration
+local ChamsConfig = {
+    Enabled = true,
+    UseTeamColors = true,
+    TeamColor = Color3.fromRGB(0, 255, 0), -- Green for teammates
+    EnemyColor = Color3.fromRGB(255, 0, 0), -- Red for enemies
+    NeutralColor = Color3.fromRGB(255, 255, 0), -- Yellow for neutral/no team
+    FillTransparency = 0.7,
+    OutlineTransparency = 0.3,
+    MaxDistance = 500,
+    ShowNames = true,
+    NameColor = Color3.fromRGB(255, 255, 255),
+    NameSize = 14,
+    NameOffset = Vector3.new(0, 3, 0),
+    ShowTeamNames = true,
+    
+    -- Custom Team System Configuration
+    CustomTeamSystem = {
+        Enabled = true,
+        -- Add your custom team detection methods here
+        TeamValueName = "Team", -- Name of the value that stores team info
+        TeamFolderName = "Team", -- Name of folder that might contain team info
+        UseLeaderstats = true, -- Check leaderstats for team info
+    }
+}
+
+-- Storage
+local PlayerChams = {}
+local LoadingMessages = {}
+
+-- Function to print loading messages
+local function printStep(message)
+    local msg = "[CHAMS] " .. message
+    print(msg)
+    table.insert(LoadingMessages, msg)
+end
+
+-- Function to check if a model is a player character
+local function isPlayerCharacter(model)
+    if not model:IsA("Model") then
+        return false
+    end
+    
+    -- Check if this is any player's character
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character == model then
+            return true
+        end
+    end
+    
+    -- Check if it has humanoid and typical player parts
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    local head = model:FindFirstChild("Head")
+    local humanoidRootPart = model:FindFirstChild("HumanoidRootPart")
+    
+    if humanoid and head and humanoidRootPart then
+        return true
+    end
+    
+    return false
+end
+
+-- Function to get player from character model
+local function getPlayerFromCharacter(character)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character == character then
+            return player
+        end
+    end
+    return nil
+end
+
+-- Function to get custom team from player
+local function getCustomTeam(player)
+    if not player or player == LocalPlayer then
+        return "LocalPlayer"
+    end
+    
+    -- Method 1: Check for team value in player
+    if ChamsConfig.CustomTeamSystem.TeamValueName then
+        local teamValue = player:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamValueName)
+        if teamValue and teamValue:IsA("StringValue") then
+            return teamValue.Value
+        elseif teamValue and teamValue:IsA("IntValue") then
+            return tostring(teamValue.Value)
+        elseif teamValue and teamValue:IsA("ObjectValue") and teamValue.Value then
+            return teamValue.Value.Name
+        end
+    end
+    
+    -- Method 2: Check leaderstats
+    if ChamsConfig.CustomTeamSystem.UseLeaderstats then
+        local leaderstats = player:FindFirstChild("leaderstats")
+        if leaderstats then
+            local teamValue = leaderstats:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamValueName or "Team")
+            if teamValue then
+                if teamValue:IsA("StringValue") then
+                    return teamValue.Value
+                elseif teamValue:IsA("IntValue") then
+                    return tostring(teamValue.Value)
+                end
+            end
+        end
+    end
+    
+    -- Method 3: Check for team folder
+    if ChamsConfig.CustomTeamSystem.TeamFolderName then
+        local teamFolder = player:FindFirstChild(ChamsConfig.CustomTeamSystem.TeamFolderName)
+        if teamFolder then
+            return teamFolder.Name
+        end
+    end
+    
+    -- Method 4: Check player data (common in some games)
+    local playerData = player:FindFirstChild("Data")
+    if playerData then
+        local teamValue = playerData:FindFirstChild("Team")
+        if teamValue then
+            if teamValue:IsA("StringValue") then
+                return teamValue.Value
+            elseif teamValue:IsA("IntValue") then
+                return tostring(teamValue.Value)
+            end
+        end
+    end
+    
+    -- Method 5: Check for specific team indicators (expand based on your game)
+    local teamIndicator = player:FindFirstChild("TeamColor")
+    if teamIndicator then
+        return "Team_" .. tostring(teamIndicator)
+    end
+    
+    return "No Team" -- Default if no team found
+end
+
+-- Function to check if player is on same team using custom system
+local function isTeammate(player)
+    if not player or not LocalPlayer or player == LocalPlayer then
+        return false
+    end
+    
+    if not ChamsConfig.CustomTeamSystem.Enabled then
+        return false
+    end
+    
+    local localTeam = getCustomTeam(LocalPlayer)
+    local playerTeam = getCustomTeam(player)
+    
+    -- If no teams detected, everyone is enemy
+    if localTeam == "No Team" or playerTeam == "No Team" or localTeam == "LocalPlayer" then
+        return false
+    end
+    
+    -- Check if same team
+    return localTeam == playerTeam
+end
+
+-- Function to get appropriate color for player
+local function getPlayerColor(player)
+    if not ChamsConfig.UseTeamColors then
+        return ChamsConfig.EnemyColor or ChamsConfig.Color
+    end
+    
+    if not player or player == LocalPlayer then
+        return ChamsConfig.NeutralColor
+    end
+    
+    if isTeammate(player) then
+        return ChamsConfig.TeamColor
+    else
+        return ChamsConfig.EnemyColor
+    end
+end
+
+-- Function to get team name for display
+local function getTeamDisplayName(player)
+    if not player then
+        return "No Team"
+    end
+    
+    if player == LocalPlayer then
+        return "You"
+    end
+    
+    return getCustomTeam(player)
+end
+
+-- Function to check if model is within distance
+local function isWithinDistance(model)
+    if not ChamsConfig.MaxDistance then
+        return true
+    end
+    
+    local localChar = LocalPlayer.Character
+    if not localChar then
+        return false
+    end
+    
+    local localRoot = localChar:FindFirstChild("HumanoidRootPart") or localChar:FindFirstChild("Head")
+    local targetRoot = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+    
+    if not localRoot or not targetRoot then
+        return false
+    end
+    
+    local distance = (localRoot.Position - targetRoot.Position).Magnitude
+    return distance <= ChamsConfig.MaxDistance
+end
+
+-- Function to create name tag for a player
+local function createNameTag(model, player)
+    if not ChamsConfig.ShowNames then
+        return nil
+    end
+    
+    local head = model:FindFirstChild("Head")
+    if not head then
+        return nil
+    end
+    
+    -- Create BillboardGui for the name tag
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ChamsNameTag_" .. player.Name
+    billboard.Adornee = head
+    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.StudsOffset = ChamsConfig.NameOffset
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = ChamsConfig.MaxDistance
+    billboard.Enabled = ChamsConfig.Enabled
+    
+    -- Create TextLabel
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = player.Name
+    textLabel.TextColor3 = ChamsConfig.NameColor
+    textLabel.TextSize = ChamsConfig.NameSize
+    textLabel.TextStrokeTransparency = 0.5
+    textLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    textLabel.Font = Enum.Font.GothamBold
+    textLabel.Parent = billboard
+    
+    -- Add team name if enabled
+    if ChamsConfig.ShowTeamNames then
+        local teamLabel = Instance.new("TextLabel")
+        teamLabel.Size = UDim2.new(1, 0, 0.5, 0)
+        teamLabel.Position = UDim2.new(0, 0, 0.5, 0)
+        teamLabel.BackgroundTransparency = 1
+        teamLabel.Text = "[" .. getTeamDisplayName(player) .. "]"
+        teamLabel.TextColor3 = getPlayerColor(player)
+        teamLabel.TextSize = ChamsConfig.NameSize - 2
+        teamLabel.TextStrokeTransparency = 0.5
+        teamLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+        teamLabel.Font = Enum.Font.Gotham
+        teamLabel.Parent = billboard
+    end
+    
+    billboard.Parent = head
+    
+    return billboard
+end
+
+-- Function to create Chams for a model
+local function createChams(model)
+    if PlayerChams[model] then
+        return PlayerChams[model]
+    end
+    
+    local player = getPlayerFromCharacter(model)
+    if not player then
+        return nil
+    end
+    
+    printStep("Creating Chams for: " .. player.Name)
+    
+    -- Get appropriate color based on team
+    local chamsColor = getPlayerColor(player)
+    
+    -- Create Highlight object
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "Chams_" .. player.Name
+    highlight.Adornee = model
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillTransparency = ChamsConfig.FillTransparency
+    highlight.OutlineTransparency = ChamsConfig.OutlineTransparency
+    highlight.FillColor = chamsColor
+    highlight.OutlineColor = chamsColor
+    highlight.Enabled = ChamsConfig.Enabled
+    highlight.Parent = model
+    
+    -- Create name tag
+    local nameTag = createNameTag(model, player)
+    
+    PlayerChams[model] = {
+        Highlight = highlight,
+        NameTag = nameTag,
+        Model = model,
+        Player = player
+    }
+    
+    printStep("✓ Chams created for: " .. player.Name .. " (Team: " .. getTeamDisplayName(player) .. ")")
+    return PlayerChams[model]
+end
+
+-- Function to update Chams colors based on team
+local function updateChamsColors()
+    for model, chamsData in pairs(PlayerChams) do
+        if chamsData.Player and ChamsConfig.UseTeamColors then
+            local newColor = getPlayerColor(chamsData.Player)
+            chamsData.Highlight.FillColor = newColor
+            chamsData.Highlight.OutlineColor = newColor
+            
+            -- Update team name color if exists
+            if chamsData.NameTag and ChamsConfig.ShowTeamNames then
+                local teamLabel = chamsData.NameTag:FindFirstChildOfClass("TextLabel")
+                if teamLabel and teamLabel.Text:find("%[.*%]") then
+                    teamLabel.TextColor3 = newColor
+                end
+            end
+        end
+    end
+end
+
+-- Function to update Chams
+local function updateChams(model)
+    if not PlayerChams[model] or not ChamsConfig.Enabled then
+        return
+    end
+    
+    local chamsData = PlayerChams[model]
+    
+    -- Check if model still exists
+    if not model or not model.Parent then
+        removeChams(model)
+        return
+    end
+    
+    -- Check distance limit
+    local withinDistance = isWithinDistance(model)
+    
+    if not withinDistance then
+        chamsData.Highlight.Enabled = false
+        if chamsData.NameTag then
+            chamsData.NameTag.Enabled = false
+        end
+        return
+    end
+    
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    
+    if humanoid then
+        -- Update based on health
+        local health = humanoid.Health
+        
+        if health <= 0 then
+            -- Dead - make chams faint and hide name
+            chamsData.Highlight.FillTransparency = 0.9
+            chamsData.Highlight.OutlineTransparency = 0.8
+            if chamsData.NameTag then
+                chamsData.NameTag.Enabled = false
+            end
+        else
+            -- Alive - normal transparency and show name
+            chamsData.Highlight.FillTransparency = ChamsConfig.FillTransparency
+            chamsData.Highlight.OutlineTransparency = ChamsConfig.OutlineTransparency
+            
+            if chamsData.NameTag then
+                chamsData.NameTag.Enabled = ChamsConfig.ShowNames and ChamsConfig.Enabled
+            end
+            
+            -- Update team colors if enabled
+            if ChamsConfig.UseTeamColors then
+                local newColor = getPlayerColor(chamsData.Player)
+                chamsData.Highlight.FillColor = newColor
+                chamsData.Highlight.OutlineColor = newColor
+            end
+            
+            -- Low health effect (only for enemies)
+            if not isTeammate(chamsData.Player) then
+                local maxHealth = humanoid.MaxHealth
+                local healthPercent = health / maxHealth
+                
+                if healthPercent < 0.3 then
+                    -- Low health - flashing effect for enemies
+                    local pulse = math.sin(tick() * 8) * 0.3 + 0.7
+                    chamsData.Highlight.FillColor = Color3.new(1, pulse, pulse)
+                    chamsData.Highlight.OutlineColor = Color3.new(1, 0.5, 0.5)
+                elseif ChamsConfig.UseTeamColors then
+                    -- Use enemy color
+                    chamsData.Highlight.FillColor = ChamsConfig.EnemyColor
+                    chamsData.Highlight.OutlineColor = ChamsConfig.EnemyColor
+                end
+            end
+        end
+        
+        chamsData.Highlight.Enabled = true
+    else
+        -- No humanoid - keep enabled with appropriate color
+        chamsData.Highlight.Enabled = true
+        if ChamsConfig.UseTeamColors then
+            local newColor = getPlayerColor(chamsData.Player)
+            chamsData.Highlight.FillColor = newColor
+            chamsData.Highlight.OutlineColor = newColor
+        else
+            chamsData.Highlight.FillColor = ChamsConfig.EnemyColor or ChamsConfig.Color
+            chamsData.Highlight.OutlineColor = ChamsConfig.EnemyColor or ChamsConfig.Color
+        end
+        if chamsData.NameTag then
+            chamsData.NameTag.Enabled = ChamsConfig.ShowNames and ChamsConfig.Enabled
+        end
+    end
+end
+
+-- Function to remove Chams
+local function removeChams(model)
+    if PlayerChams[model] then
+        local playerName = PlayerChams[model].Player and PlayerChams[model].Player.Name or model.Name
+        
+        PlayerChams[model].Highlight:Destroy()
+        if PlayerChams[model].NameTag then
+            PlayerChams[model].NameTag:Destroy()
+        end
+        PlayerChams[model] = nil
+        printStep("Chams removed for: " .. playerName)
+    end
+end
+
+-- Function to scan workspace for player characters
+local function scanWorkspace()
+    printStep("Scanning workspace for players...")
+    
+    local foundPlayers = 0
+    local teammates = 0
+    local enemies = 0
+    
+    -- Scan all models in workspace
+    for _, model in ipairs(Workspace:GetDescendants()) do
+        if model:IsA("Model") and isPlayerCharacter(model) then
+            if model ~= LocalPlayer.Character then -- Don't highlight self
+                local chamsData = createChams(model)
+                if chamsData then
+                    foundPlayers = foundPlayers + 1
+                    if isTeammate(chamsData.Player) then
+                        teammates = teammates + 1
+                    else
+                        enemies = enemies + 1
+                    end
+                end
+            end
+        end
+    end
+    
+    printStep("Found " .. foundPlayers .. " players (" .. teammates .. " teammates, " .. enemies .. " enemies)")
+end
+
+-- Function to setup player connections
+local function setupPlayerConnections()
+    -- When a player joins, wait for their character
+    Players.PlayerAdded:Connect(function(player)
+        player.CharacterAdded:Connect(function(character)
+            wait(1) -- Wait for character to fully load
+            if character ~= LocalPlayer.Character then
+                printStep("Player character added: " .. player.Name)
+                createChams(character)
+            end
+        end)
+        
+        -- Handle character removal
+        player.CharacterRemoving:Connect(function(character)
+            printStep("Player character removed: " .. player.Name)
+            removeChams(character)
+        end)
+    end)
+    
+    -- Setup existing players
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            createChams(player.Character)
+        end
+        
+        player.CharacterAdded:Connect(function(character)
+            wait(1)
+            if character ~= LocalPlayer.Character then
+                printStep("Existing player character added: " .. player.Name)
+                createChams(character)
+            end
+        end)
+        
+        player.CharacterRemoving:Connect(function(character)
+            printStep("Existing player character removed: " .. player.Name)
+            removeChams(character)
+        end)
+    end
+end
+
+-- Function to setup custom team monitoring
+local function setupCustomTeamMonitoring()
+    if not ChamsConfig.CustomTeamSystem.Enabled then
+        return
+    end
+    
+    printStep("Setting up custom team monitoring...")
+    
+    -- Monitor all players for team changes
+    local function monitorPlayerTeam(player)
+        -- Monitor common locations for team changes
+        local locationsToMonitor = {
+            player,
+            player:FindFirstChild("leaderstats"),
+            player:FindFirstChild("Data")
+        }
+        
+        for _, location in ipairs(locationsToMonitor) do
+            if location then
+                location.ChildAdded:Connect(function(child)
+                    if child.Name == ChamsConfig.CustomTeamSystem.TeamValueName or child.Name == "Team" then
+                        wait(0.1)
+                        if player.Character and PlayerChams[player.Character] then
+                            printStep(player.Name .. " team changed to: " .. getTeamDisplayName(player))
+                            updateChamsColors()
+                        end
+                    end
+                end)
+                
+                -- Also monitor existing children
+                for _, child in ipairs(location:GetChildren()) do
+                    if child.Name == ChamsConfig.CustomTeamSystem.TeamValueName or child.Name == "Team" then
+                        if child:IsA("ValueBase") then
+                            child.Changed:Connect(function()
+                                wait(0.1)
+                                if player.Character and PlayerChams[player.Character] then
+                                    printStep(player.Name .. " team changed to: " .. getTeamDisplayName(player))
+                                    updateChamsColors()
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Setup for existing players
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            monitorPlayerTeam(player)
+        end
+    end
+    
+    -- Setup for new players
+    Players.PlayerAdded:Connect(function(player)
+        monitorPlayerTeam(player)
+    end)
+end
+
+-- Function to setup workspace monitoring
+local function setupWorkspaceMonitoring()
+    -- Listen for new models in workspace
+    Workspace.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("Model") then
+            wait(0.5) -- Wait for model to load
+            
+            if isPlayerCharacter(descendant) and descendant ~= LocalPlayer.Character and not PlayerChams[descendant] then
+                local player = getPlayerFromCharacter(descendant)
+                if player then
+                    printStep("New player detected: " .. player.Name)
+                    createChams(descendant)
+                end
+            end
+        end
+    end)
+    
+    -- Listen for models being removed
+    Workspace.DescendantRemoving:Connect(function(descendant)
+        if descendant:IsA("Model") and PlayerChams[descendant] then
+            local player = getPlayerFromCharacter(descendant)
+            printStep("Player removed: " .. (player and player.Name or descendant.Name))
+            removeChams(descendant)
+        end
+    end)
+end
+
+-- Function to initialize the Chams system
+local function initializeChams()
+    printStep("=== CUSTOM TEAM CHAMS SYSTEM ===")
+    printStep("Local Player: " .. LocalPlayer.Name)
+    printStep("Local Team: " .. getTeamDisplayName(LocalPlayer))
+    printStep("Custom Team System: " .. (ChamsConfig.CustomTeamSystem.Enabled and "ENABLED" or "DISABLED"))
+    
+    -- Clear existing Chams
+    for model, chamsData in pairs(PlayerChams) do
+        chamsData.Highlight:Destroy()
+        if chamsData.NameTag then
+            chamsData.NameTag:Destroy()
+        end
+    end
+    PlayerChams = {}
+    
+    -- Setup systems
+    setupPlayerConnections()
+    setupCustomTeamMonitoring()
+    setupWorkspaceMonitoring()
+    scanWorkspace()
+    
+    printStep("Custom Team Chams system initialized!")
+    printStep("=== SYSTEM READY ===")
+end
+
+-- Update all Chams in a loop
+RunService.Heartbeat:Connect(function()
+    for model, chamsData in pairs(PlayerChams) do
+        pcall(function()
+            updateChams(model)
+        end)
+    end
+end)
+
+-- Auto-refresh when local player respawns
+LocalPlayer.CharacterAdded:Connect(function()
+    wait(3)
+    printStep("Player respawned - refreshing Chams...")
+end)
+
+-- Initialize the system
+wait(2)
+initializeChams()
+
+-- Return control functions
+return {
+    Config = ChamsConfig,
+    
+    -- Control functions
+    SetEnabled = function(state)
+        ChamsConfig.Enabled = state
+        for _, chamsData in pairs(PlayerChams) do
+            chamsData.Highlight.Enabled = state
+            if chamsData.NameTag then
+                chamsData.NameTag.Enabled = state and ChamsConfig.ShowNames
+            end
+        end
+        printStep("Chams " .. (state and "ENABLED" or "DISABLED"))
+    end,
+    
+    SetUseTeamColors = function(useTeamColors)
+        ChamsConfig.UseTeamColors = useTeamColors
+        updateChamsColors()
+        printStep("Team colors " .. (useTeamColors and "ENABLED" or "DISABLED"))
+    end,
+    
+    SetTeamColor = function(color)
+        ChamsConfig.TeamColor = color
+        if ChamsConfig.UseTeamColors then
+            updateChamsColors()
+        end
+        printStep("Team color updated")
+    end,
+    
+    SetEnemyColor = function(color)
+        ChamsConfig.EnemyColor = color
+        if ChamsConfig.UseTeamColors then
+            updateChamsColors()
+        end
+        printStep("Enemy color updated")
+    end,
+    
+    SetNeutralColor = function(color)
+        ChamsConfig.NeutralColor = color
+        if ChamsConfig.UseTeamColors then
+            updateChamsColors()
+        end
+        printStep("Neutral color updated")
+    end,
+    
+    -- Custom Team System Functions
+    SetCustomTeamEnabled = function(enabled)
+        ChamsConfig.CustomTeamSystem.Enabled = enabled
+        printStep("Custom team system " .. (enabled and "ENABLED" or "DISABLED"))
+        updateChamsColors()
+    end,
+    
+    SetTeamValueName = function(valueName)
+        ChamsConfig.CustomTeamSystem.TeamValueName = valueName
+        printStep("Team value name set to: " .. valueName)
+        updateChamsColors()
+    end,
+    
+    SetCustomTeamFunction = function(customFunction)
+        if type(customFunction) == "function" then
+            ChamsConfig.CustomTeamSystem.GetCustomTeam = customFunction
+            printStep("Custom team function set")
+            updateChamsColors()
+        else
+            printStep("ERROR: Custom team function must be a function")
+        end
+    end,
+    
+    SetMaxDistance = function(distance)
+        ChamsConfig.MaxDistance = distance
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.NameTag then
+                chamsData.NameTag.MaxDistance = distance
+            end
+        end
+        printStep("Max distance set to: " .. distance .. " studs")
+    end,
+    
+    SetTransparency = function(fillTrans, outlineTrans)
+        ChamsConfig.FillTransparency = fillTrans
+        ChamsConfig.OutlineTransparency = outlineTrans
+        
+        for _, chamsData in pairs(PlayerChams) do
+            chamsData.Highlight.FillTransparency = fillTrans
+            chamsData.Highlight.OutlineTransparency = outlineTrans
+        end
+        printStep("Transparency updated: Fill=" .. fillTrans .. ", Outline=" .. outlineTrans)
+    end,
+    
+    SetShowNames = function(show)
+        ChamsConfig.ShowNames = show
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.NameTag then
+                chamsData.NameTag.Enabled = show and ChamsConfig.Enabled
+            else
+                -- Create name tag if it doesn't exist but should
+                if show and chamsData.Player then
+                    chamsData.NameTag = createNameTag(chamsData.Model, chamsData.Player)
+                end
+            end
+        end
+        printStep("Name display " .. (show and "ENABLED" or "DISABLED"))
+    end,
+    
+    SetShowTeamNames = function(show)
+        ChamsConfig.ShowTeamNames = show
+        -- Recreate all name tags to include/remove team names
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.NameTag then
+                chamsData.NameTag:Destroy()
+            end
+            if ChamsConfig.ShowNames and chamsData.Player then
+                chamsData.NameTag = createNameTag(chamsData.Model, chamsData.Player)
+            end
+        end
+        printStep("Team name display " .. (show and "ENABLED" or "DISABLED"))
+    end,
+    
+    SetNameColor = function(color)
+        ChamsConfig.NameColor = color
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.NameTag then
+                local textLabel = chamsData.NameTag:FindFirstChildOfClass("TextLabel")
+                if textLabel and not textLabel.Text:find("%[.*%]") then
+                    textLabel.TextColor3 = color
+                end
+            end
+        end
+        printStep("Name color updated")
+    end,
+    
+    SetNameSize = function(size)
+        ChamsConfig.NameSize = size
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.NameTag then
+                for _, label in ipairs(chamsData.NameTag:GetChildren()) do
+                    if label:IsA("TextLabel") then
+                        label.TextSize = label.Text:find("%[.*%]") and size - 2 or size
+                    end
+                end
+            end
+        end
+        printStep("Name size updated to: " .. size)
+    end,
+    
+    Refresh = function()
+        printStep("Manual refresh requested...")
+        initializeChams()
+    end,
+    
+    GetStatus = function()
+        local active = 0
+        local teammates = 0
+        local enemies = 0
+        
+        for _, chamsData in pairs(PlayerChams) do
+            if chamsData.Highlight.Enabled then
+                active = active + 1
+                if isTeammate(chamsData.Player) then
+                    teammates = teammates + 1
+                else
+                    enemies = enemies + 1
+                end
+            end
+        end
+        
+        return {
+            TotalChams = active,
+            Teammates = teammates,
+            Enemies = enemies,
+            SystemEnabled = ChamsConfig.Enabled,
+            UseTeamColors = ChamsConfig.UseTeamColors,
+            CustomTeamEnabled = ChamsConfig.CustomTeamSystem.Enabled,
+            ShowNames = ChamsConfig.ShowNames,
+            LoadingMessages = LoadingMessages
+        }
+    end,
+    
+    PrintStatus = function()
+        local status = GetStatus()
+        printStep("=== SYSTEM STATUS ===")
+        printStep("Active Chams: " .. status.TotalChams)
+        printStep("Teammates: " .. status.Teammates)
+        printStep("Enemies: " .. status.Enemies)
+        printStep("System Enabled: " .. tostring(status.SystemEnabled))
+        printStep("Team Colors: " .. tostring(status.UseTeamColors))
+        printStep("Custom Team System: " .. tostring(status.CustomTeamEnabled))
+        printStep("Show Names: " .. tostring(status.ShowNames))
+        printStep("Max Distance: " .. (ChamsConfig.MaxDistance or "None"))
+        printStep("====================")
+    end,
+    
+    -- Debug function to see all current chams
+    DebugChams = function()
+        printStep("=== DEBUG CHAMS ===")
+        for model, chamsData in pairs(PlayerChams) do
+            local playerName = chamsData.Player and chamsData.Player.Name or "Unknown"
+            local teamName = chamsData.Player and getTeamDisplayName(chamsData.Player) or "No Team"
+            local enabled = chamsData.Highlight.Enabled
+            local nameTagEnabled = chamsData.NameTag and chamsData.NameTag.Enabled or false
+            local isTeammate = isTeammate(chamsData.Player)
+            printStep(playerName .. " [" .. teamName .. "] - Team: " .. tostring(isTeammate) .. ", Chams: " .. tostring(enabled) .. ", NameTag: " .. tostring(nameTagEnabled))
+        end
+        printStep("===================")
+    end,
+    
+    -- Function to manually set a player's team (for testing)
+    SetPlayerTeam = function(playerName, teamName)
+        local player = Players:FindFirstChild(playerName)
+        if player then
+            -- This is just for demonstration - you'd need to implement based on your game's team system
+            printStep("NOTE: SetPlayerTeam requires implementation for your specific team system")
+            printStep("Player: " .. playerName .. ", Team: " .. teamName)
+        else
+            printStep("Player not found: " .. playerName)
+        end
+    end
+}
