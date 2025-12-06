@@ -1,253 +1,185 @@
-local baseConfig = {
-    Enabled = true,
-    AimButton = Enum.KeyCode.LeftControl,
-    AimPart = "Head",
-    MaxDistance = 5000,
-    Prediction = 0.10,
-    Smoothing = 0.70,
-    FOV = 243,
-    UsePrediction = false,
-    TeamCheck = true,
-    ChamsEnabled = true,
-    ChamsTeamCheck = true,
-    DrawFOV = false,
-    InfiniteJumpEnabled = false,
-    SecurityDisablerEnabled = false
-}
+-- COMBINED SCRIPT: Infinite Jump + Dash GUI + Shift Lock + NoClip + Security Systems
+-- All features activate instantly on injection
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInput = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local CoreGui = game:GetService("CoreGui")
+
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local Workspace = game:GetService("Workspace")
 
--- Global GUI variables
-local mainGui
-local GUI
-
--- FPS Counter variables
-local FPS = 0
-local lastTime = tick()
-local frameCount = 0
-
--- Security Disabler variables
-local SecurityDisabler = {
-    Enabled = baseConfig.SecurityDisablerEnabled,
-    LastRefresh = tick(),
-    Connections = {}
-}
-
--- MEMORY LEAK FIX: Cleanup System
-local Connections = {}
-local function AddConnection(connection)
-    table.insert(Connections, connection)
-    return connection
-end
-
-local function CleanupAll()
-    print("🧹 Cleaning up memory...")
+-- =============================================
+-- NOCIP INDICATOR GUI
+-- =============================================
+local function createNoClipIndicator()
+    local gui = Instance.new("ScreenGui", CoreGui)
+    gui.Name = "NoClipIndicator"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
     
-    -- Disconnect all connections
-    for _, conn in ipairs(Connections) do
-        if conn and typeof(conn) == "RBXScriptConnection" then
-            conn:Disconnect()
-        end
-    end
-    Connections = {}
-    
-    -- Clean up Chams
-    for player, highlight in pairs(ChamsESP.PlayerHighlights or {}) do
-        if highlight then
-            highlight:Destroy()
-        end
-    end
-    ChamsESP.PlayerHighlights = {}
-    
-    for player, nameGui in pairs(ChamsESP.PlayerNames or {}) do
-        if nameGui then
-            nameGui:Destroy()
-        end
-    end
-    ChamsESP.PlayerNames = {}
-    
-    -- Clean up Security Disabler
-    for _, conn in pairs(SecurityDisabler.Connections or {}) do
-        if conn then conn:Disconnect() end
-    end
-    SecurityDisabler.Connections = {}
-    
-    -- Clean up FOV Circle
-    if FOVCircle then
-        FOVCircle.Parent:Destroy()
-        FOVCircle = nil
-    end
-    
-    -- Clean up GUI
-    if mainGui then
-        mainGui:Destroy()
-        mainGui = nil
-    end
-    
-    print("✅ Cleanup completed!")
-end
-
--- Auto-cleanup when script stops
-AddConnection(game:GetService("ScriptContext").DescendantRemoving:Connect(function(descendant)
-    if descendant == script then
-        CleanupAll()
-    end
-end))
-
--- FOV Circle Drawing
-local FOVCircle = nil
-local function createFOVCircle()
-    if FOVCircle then
-        FOVCircle:Remove()
-        FOVCircle = nil
-    end
-    
-    if not baseConfig.DrawFOV then return end
-    
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    
-    local fovGui = Instance.new("ScreenGui")
-    fovGui.Name = "FOVCircleGui"
-    fovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    fovGui.IgnoreGuiInset = true
-    fovGui.ResetOnSpawn = false
-    fovGui.Parent = playerGui
-    
-    FOVCircle = Instance.new("Frame")
-    FOVCircle.Name = "FOVCircle"
-    FOVCircle.Size = UDim2.new(0, baseConfig.FOV * 2, 0, baseConfig.FOV * 2)
-    FOVCircle.Position = UDim2.new(0.5, -baseConfig.FOV, 0.5, -baseConfig.FOV)
-    FOVCircle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    FOVCircle.BackgroundTransparency = 0.8
-    FOVCircle.BorderSizePixel = 0
-    FOVCircle.ZIndex = 10
-    FOVCircle.Parent = fovGui
+    local indicator = Instance.new("Frame")
+    indicator.Name = "Indicator"
+    indicator.Size = UDim2.new(0, 30, 0, 30)
+    indicator.Position = UDim2.new(0.5, -15, 0.1, 0) -- Middle top (10% from top)
+    indicator.BackgroundColor3 = Color3.new(0, 0, 0) -- Black when inactive
+    indicator.BorderSizePixel = 0
     
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = FOVCircle
+    corner.Parent = indicator
     
-    local outline = Instance.new("UIStroke")
-    outline.Color = Color3.fromRGB(0, 0, 0)
-    outline.Thickness = 1
-    outline.Parent = FOVCircle
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 2
+    stroke.Color = Color3.new(1, 1, 1)
+    stroke.Parent = indicator
+    
+    indicator.Parent = gui
+    
+    return indicator
 end
 
-local function updateFOVCircle()
-    if not FOVCircle then return end
-    
-    FOVCircle.Size = UDim2.new(0, baseConfig.FOV * 2, 0, baseConfig.FOV * 2)
-    FOVCircle.Position = UDim2.new(0.5, -baseConfig.FOV, 0.5, -baseConfig.FOV)
-end
+local noClipIndicator = createNoClipIndicator()
+local noClipEnabled = false
 
--- FPS Counter function
-local function updateFPS()
-    frameCount = frameCount + 1
-    local currentTime = tick()
-    if currentTime - lastTime >= 0.5 then
-        FPS = math.floor(frameCount / (currentTime - lastTime))
-        frameCount = 0
-        lastTime = currentTime
+-- =============================================
+-- NOCIP SYSTEM
+-- =============================================
+do
+    local noclip = false
+    local clip = nil
+    
+    local function noclipLoop()
+        if clip == nil then
+            clip = RunService.Stepped:Connect(function()
+                if noclip == true and LocalPlayer.Character ~= nil then
+                    for _, child in pairs(LocalPlayer.Character:GetDescendants()) do
+                        if child:IsA("BasePart") and child.CanCollide == true then
+                            child.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end
+    end
+    
+    local function toggleNoClip()
+        noclip = not noclip
+        noClipEnabled = noclip
         
-        if GUI and GUI.UpdateFPS then
-            GUI.UpdateFPS(FPS)
+        -- Update indicator color
+        if noclip then
+            noClipIndicator.BackgroundColor3 = Color3.new(0, 1, 0) -- Green when active
+            print("✅ NoClip: ENABLED")
+        else
+            noClipIndicator.BackgroundColor3 = Color3.new(0, 0, 0) -- Black when inactive
+            print("❌ NoClip: DISABLED")
         end
-    end
-end
-
--- FPS update loop
-AddConnection(RunService.Heartbeat:Connect(updateFPS))
-
--- Infinite Jump Function
-local function SetupInfiniteJump()
-    AddConnection(UserInput.JumpRequest:Connect(function()
-        if baseConfig.InfiniteJumpEnabled then
-            local character = LocalPlayer.Character
-            if character then
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    humanoid:ChangeState("Jumping")
-                end
-            end
-        end
-    end))
-end
-
--- Security Disabler Functions
-local function disableLasers()
-    if not SecurityDisabler.Enabled then return end
-    
-    for _, obj in pairs(workspace:GetDescendants()) do
-        if obj.Name:lower():find("laser") then
-            for _, child in pairs(obj:GetDescendants()) do
-                if child:IsA("BasePart") or child:IsA("MeshPart") then
-                    child.CanTouch = false
-                    child.CanQuery = false
-                    child.Material = Enum.Material.Plastic
-                    child.Transparency = 0.3
-                end
-            end
+        
+        if noclip then
+            noclipLoop()
+        elseif clip then
+            clip:Disconnect()
+            clip = nil
             
-            if obj:IsA("BasePart") or obj:IsA("MeshPart") then
-                obj.CanTouch = false
-                obj.CanQuery = false
-                obj.Material = Enum.Material.Plastic
-                obj.Transparency = 0.3
-            end
-        end
-    end
-end
-
-local function disableBarbedWire()
-    if not SecurityDisabler.Enabled then return end
-    
-    for _, obj in pairs(workspace:GetDescendants()) do
-        if obj.Name:lower():find("barbedwire") then
-            if obj:IsA("BasePart") then
-                obj.CanQuery = false
-                obj.CanTouch = false
-                obj.CanCollide = false
-                obj.Material = Enum.Material.Plastic
-                obj.Transparency = 0.5
-            end
-            
-            for _, child in pairs(obj:GetDescendants()) do
-                if child:IsA("BasePart") then
-                    child.CanQuery = false
-                    child.CanTouch = false
-                    child.CanCollide = false
-                    child.Material = Enum.Material.Plastic
-                    child.Transparency = 0.5
+            -- Re-enable collision when turning off noclip
+            if LocalPlayer.Character then
+                for _, child in pairs(LocalPlayer.Character:GetDescendants()) do
+                    if child:IsA("BasePart") then
+                        child.CanCollide = true
+                    end
                 end
             end
         end
     end
+    
+    -- N key toggle for NoClip
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        
+        if input.KeyCode == Enum.KeyCode.Q then
+            toggleNoClip()
+        end
+    end)
+    
+    -- Auto-reconnect noclip when character respawns
+    LocalPlayer.CharacterAdded:Connect(function(character)
+        if noclip then
+            wait(1) -- Wait for character to fully load
+            noclipLoop()
+        end
+    end)
+    
+    print("✅ NoClip system loaded! Press N to toggle")
 end
 
-local function setupSecurityDisabler()
-    -- Clear existing connections
-    for _, conn in pairs(SecurityDisabler.Connections) do
-        conn:Disconnect()
+-- =============================================
+-- SECURITY SYSTEMS (LASERS + BARBED WIRE)
+-- =============================================
+do
+    -- Laser Disabler
+    local function disableLasers()
+        for _, obj in pairs(Workspace:GetDescendants()) do
+            if obj.Name:lower():find("laser") then
+                print("🔍 Found laser object: " .. obj.Name)
+                
+                for _, child in pairs(obj:GetDescendants()) do
+                    if child:IsA("BasePart") or child:IsA("MeshPart") then
+                        child.CanTouch = false
+                        child.CanQuery = false
+                        child.Material = Enum.Material.Plastic
+                        child.Transparency = 0.3
+                        print("✅ Disabled laser part: " .. child.Name)
+                    end
+                end
+                
+                if obj:IsA("BasePart") or obj:IsA("MeshPart") then
+                    obj.CanTouch = false
+                    obj.CanQuery = false
+                    obj.Material = Enum.Material.Plastic
+                    obj.Transparency = 0.3
+                    print("✅ Disabled main laser part: " .. obj.Name)
+                end
+            end
+        end
     end
-    SecurityDisabler.Connections = {}
-    
-    if not SecurityDisabler.Enabled then return end
-    
-    -- Initial disable
+
+    -- BarbedWire Remover
+    local function disableBarbedWire()
+        for _, obj in pairs(Workspace:GetDescendants()) do
+            if obj.Name:lower():find("barbedwire") then
+                if obj:IsA("BasePart") then
+                    obj.CanQuery = false
+                    obj.CanTouch = false
+                    obj.CanCollide = false
+                    obj.Material = Enum.Material.Plastic
+                    obj.Transparency = 0.5
+                end
+                
+                for _, child in pairs(obj:GetDescendants()) do
+                    if child:IsA("BasePart") then
+                        child.CanQuery = false
+                        child.CanTouch = false
+                        child.CanCollide = false
+                        child.Material = Enum.Material.Plastic
+                        child.Transparency = 0.5
+                    end
+                end
+            end
+        end
+    end
+
+    -- Security Systems Initialization
     disableBarbedWire()
     disableLasers()
-    
-    -- Monitor for new objects
-    local descendantConn = Workspace.DescendantAdded:Connect(function(obj)
+
+    -- Monitor for new objects being added
+    Workspace.DescendantAdded:Connect(function(obj)
         -- Handle BarbedWire objects
         if obj.Name:lower():find("barbedwire") then
-            wait(0.1)
+            wait(0.1) -- Wait a bit for the object to fully load
             
             if obj:IsA("BasePart") then
                 obj.CanQuery = false
@@ -266,11 +198,15 @@ local function setupSecurityDisabler()
                     child.Transparency = 0.5
                 end
             end
+            
+            print("✅ Disabled BarbedWire: " .. obj.Name)
         end
         
         -- Handle Laser objects
         if obj.Name:lower():find("laser") then
-            wait(0.1)
+            wait(0.1) -- Wait for object to fully load
+            
+            print("🔍 New laser object detected: " .. obj.Name)
             
             for _, child in pairs(obj:GetDescendants()) do
                 if child:IsA("BasePart") or child:IsA("MeshPart") then
@@ -278,6 +214,7 @@ local function setupSecurityDisabler()
                     child.CanQuery = false
                     child.Material = Enum.Material.Plastic
                     child.Transparency = 0.3
+                    print("✅ Disabled new laser part: " .. child.Name)
                 end
             end
             
@@ -286,1246 +223,516 @@ local function setupSecurityDisabler()
                 obj.CanQuery = false
                 obj.Material = Enum.Material.Plastic
                 obj.Transparency = 0.3
+                print("✅ Disabled main new laser part: " .. obj.Name)
             end
         end
     end)
-    
-    table.insert(SecurityDisabler.Connections, descendantConn)
-    
-    -- Periodic refresh
-    local heartbeatConn = RunService.Heartbeat:Connect(function()
-        if tick() - SecurityDisabler.LastRefresh > 10 then
-            SecurityDisabler.LastRefresh = tick()
+
+    -- Periodic refresh to catch any missed objects
+    local lastRefresh = tick()
+    RunService.Heartbeat:Connect(function()
+        if tick() - lastRefresh > 10 then -- Refresh every 10 seconds
+            lastRefresh = tick()
             disableBarbedWire()
             disableLasers()
+            print("🔄 Refreshed security systems")
         end
     end)
-    
-    table.insert(SecurityDisabler.Connections, heartbeatConn)
+
+    print("✅ Security systems loaded! (Lasers + Barbed Wire)")
 end
 
--- Chams ESP system with Name ESP
-local ChamsESP = {
-    Enabled = baseConfig.ChamsEnabled,
-    TeamCheck = baseConfig.ChamsTeamCheck,
-    PlayerHighlights = {},
-    PlayerNames = {},
-    Opacity = 0.2,
-    Colors = {
-        Enemy = Color3.fromRGB(255, 0, 0),
-        Team = Color3.fromRGB(0, 255, 0),
-        Neutral = Color3.fromRGB(255, 255, 0)
-    }
-}
+-- =============================================
+-- INFINITE JUMP SCRIPT
+-- =============================================
+do
+    local Player = Players.LocalPlayer
+    local UIS = UserInputService
 
-local function shouldShowChams(player)
-    if not ChamsESP.Enabled then
-        return false
-    end
-    
-    if player == LocalPlayer then
-        return false
-    end
-    
-    if not player.Character then
-        return false
-    end
-    
-    if ChamsESP.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
-        return false
-    end
-    
-    return true
-end
+    _G.JumpHeight = 50
 
--- Function to create player name display
-local function createPlayerNameDisplay(player)
-    if ChamsESP.PlayerNames[player] then
-        return ChamsESP.PlayerNames[player]
+    local function Action(Object, Function) 
+        if Object ~= nil then 
+            Function(Object) 
+        end 
     end
-    
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    
-    -- Create ScreenGui for the name display
-    local nameGui = Instance.new("ScreenGui")
-    nameGui.Name = "NameESP_" .. player.Name
-    nameGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    nameGui.IgnoreGuiInset = true
-    nameGui.ResetOnSpawn = false
-    nameGui.Enabled = false
-    nameGui.Parent = playerGui
-    
-    -- Create text label for the name
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "NameLabel"
-    nameLabel.Size = UDim2.new(0, 100, 0, 20)
-    nameLabel.Position = UDim2.new(0, 0, 0, 0)
-    nameLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    nameLabel.BackgroundTransparency = 0.5
-    nameLabel.Text = player.Name
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextSize = 12
-    nameLabel.Font = Enum.Font.Gotham
-    nameLabel.BorderSizePixel = 0
-    nameLabel.ZIndex = 10
-    nameLabel.Parent = nameGui
-    
-    -- Rounded corners for the name background
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 4)
-    corner.Parent = nameLabel
-    
-    -- Store the GUI
-    ChamsESP.PlayerNames[player] = nameGui
-    return nameGui
-end
 
--- Function to update player name display position
-local function updatePlayerNameDisplay(player)
-    if not ChamsESP.PlayerNames[player] then
-        return
-    end
-    
-    local nameGui = ChamsESP.PlayerNames[player]
-    local character = player.Character
-    
-    if character and shouldShowChams(player) then
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        
-        if humanoid and humanoid.Health > 0 and rootPart then
-            -- Position name under feet (slightly below HumanoidRootPart)
-            local screenPos, onScreen = Camera:WorldToScreenPoint(rootPart.Position - Vector3.new(0, 3, 0))
-            
-            if onScreen then
-                nameGui.Enabled = true
-                local nameLabel = nameGui:FindFirstChild("NameLabel")
-                if nameLabel then
-                    nameLabel.Position = UDim2.new(0, screenPos.X - 50, 0, screenPos.Y)
-                    
-                    -- Update color based on team
-                    if LocalPlayer.Team and player.Team then
-                        if player.Team == LocalPlayer.Team then
-                            nameLabel.TextColor3 = ChamsESP.Colors.Team
-                        else
-                            nameLabel.TextColor3 = ChamsESP.Colors.Enemy
-                        end
-                    else
-                        nameLabel.TextColor3 = ChamsESP.Colors.Neutral
+    UIS.InputBegan:connect(function(UserInput)
+        if UserInput.UserInputType == Enum.UserInputType.Keyboard and UserInput.KeyCode == Enum.KeyCode.Space then
+            if Player.Character and Player.Character:FindFirstChild("Humanoid") then
+                Action(Player.Character.Humanoid, function(self)
+                    if self:GetState() == Enum.HumanoidStateType.Jumping or self:GetState() == Enum.HumanoidStateType.Freefall then
+                        Action(self.Parent.HumanoidRootPart, function(self)
+                            self.Velocity = Vector3.new(0, _G.JumpHeight, 0)
+                        end)
                     end
-                end
-            else
-                nameGui.Enabled = false
+                end)
             end
-        else
-            nameGui.Enabled = false
         end
-    else
-        nameGui.Enabled = false
-    end
-end
-
--- Function to remove player name display
-local function removePlayerNameDisplay(player)
-    if ChamsESP.PlayerNames[player] then
-        ChamsESP.PlayerNames[player]:Destroy()
-        ChamsESP.PlayerNames[player] = nil
-    end
-end
-
--- Function to update all name displays
-local function updateAllNameDisplays()
-    for player, nameGui in pairs(ChamsESP.PlayerNames) do
-        updatePlayerNameDisplay(player)
-    end
-end
-
-local function createPlayerHighlight(player)
-    if ChamsESP.PlayerHighlights[player] then
-        return ChamsESP.PlayerHighlights[player]
-    end
-    
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "ChamsESP_" .. player.Name
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.FillTransparency = 1 - ChamsESP.Opacity
-    highlight.OutlineTransparency = 0.3
-    highlight.Adornee = nil
-    
-    if LocalPlayer.Team and player.Team then
-        if player.Team == LocalPlayer.Team then
-            highlight.FillColor = ChamsESP.Colors.Team
-            highlight.OutlineColor = ChamsESP.Colors.Team
-        else
-            highlight.FillColor = ChamsESP.Colors.Enemy
-            highlight.OutlineColor = ChamsESP.Colors.Enemy
-        end
-    else
-        highlight.FillColor = ChamsESP.Colors.Neutral
-        highlight.OutlineColor = ChamsESP.Colors.Neutral
-    end
-    
-    ChamsESP.PlayerHighlights[player] = highlight
-    
-    -- Create name display when creating highlight
-    createPlayerNameDisplay(player)
-    
-    return highlight
-end
-
-local function updatePlayerHighlight(player)
-    if not ChamsESP.PlayerHighlights[player] then
-        return
-    end
-    
-    local highlight = ChamsESP.PlayerHighlights[player]
-    local character = player.Character
-    
-    if character and shouldShowChams(player) then
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
-            highlight.Adornee = character
-            highlight.Parent = character
-            highlight.Enabled = true
-            
-            if LocalPlayer.Team and player.Team then
-                if player.Team == LocalPlayer.Team then
-                    highlight.FillColor = ChamsESP.Colors.Team
-                    highlight.OutlineColor = ChamsESP.Colors.Team
-                else
-                    highlight.FillColor = ChamsESP.Colors.Enemy
-                    highlight.OutlineColor = ChamsESP.Colors.Enemy
-                end
-            else
-                highlight.FillColor = ChamsESP.Colors.Neutral
-                highlight.OutlineColor = ChamsESP.Colors.Neutral
-            end
-        else
-            highlight.Enabled = false
-            highlight.Adornee = nil
-            highlight.Parent = nil
-        end
-    else
-        highlight.Enabled = false
-        highlight.Adornee = nil
-        highlight.Parent = nil
-    end
-    
-    -- Update name display when updating highlight
-    updatePlayerNameDisplay(player)
-end
-
-local function removePlayerHighlight(player)
-    if ChamsESP.PlayerHighlights[player] then
-        ChamsESP.PlayerHighlights[player]:Destroy()
-        ChamsESP.PlayerHighlights[player] = nil
-    end
-    
-    -- Remove name display when removing highlight
-    removePlayerNameDisplay(player)
-end
-
-local function updateAllChams()
-    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
-        updatePlayerHighlight(player)
-    end
-end
-
-local function initializeChams()
-    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
-        highlight:Destroy()
-    end
-    ChamsESP.PlayerHighlights = {}
-    
-    -- Clear name displays
-    for player, nameGui in pairs(ChamsESP.PlayerNames) do
-        nameGui:Destroy()
-    end
-    ChamsESP.PlayerNames = {}
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            createPlayerHighlight(player)
-            updatePlayerHighlight(player)
-        end
-    end
-end
-
-AddConnection(Players.PlayerAdded:Connect(function(player)
-    createPlayerHighlight(player)
-    updatePlayerHighlight(player)
-    
-    AddConnection(player.CharacterAdded:Connect(function(character)
-        updatePlayerHighlight(player)
-    end))
-end))
-
-AddConnection(Players.PlayerRemoving:Connect(function(player)
-    removePlayerHighlight(player)
-end))
-
-local function setupFastCharacterMonitoring()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            AddConnection(player.CharacterAdded:Connect(function(character)
-                updatePlayerHighlight(player)
-            end))
-            
-            AddConnection(player.CharacterRemoving:Connect(function()
-                if ChamsESP.PlayerHighlights[player] then
-                    local highlight = ChamsESP.PlayerHighlights[player]
-                    highlight.Enabled = false
-                    highlight.Adornee = nil
-                    highlight.Parent = nil
-                end
-            end))
-        end
-    end
-end
-
--- Continuous name display update loop
-AddConnection(RunService.Heartbeat:Connect(function()
-    if not ChamsESP.Enabled then return end
-    
-    for player, nameGui in pairs(ChamsESP.PlayerNames) do
-        if player and player.Parent then
-            updatePlayerNameDisplay(player)
-        else
-            removePlayerNameDisplay(player)
-        end
-    end
-end))
-
-AddConnection(RunService.Heartbeat:Connect(function()
-    if not ChamsESP.Enabled then return end
-    
-    for player, highlight in pairs(ChamsESP.PlayerHighlights) do
-        if player and player.Parent then
-            updatePlayerHighlight(player)
-        else
-            removePlayerHighlight(player)
-        end
-    end
-end))
-
-AddConnection(LocalPlayer:GetPropertyChangedSignal("Team"):Connect(function()
-    updateAllChams()
-    updateAllNameDisplays()
-end))
-
--- Function to safely create GUI
-local function createModernGUI()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    
-    if mainGui then
-        mainGui:Destroy()
-    end
-    
-    mainGui = Instance.new("ScreenGui")
-    mainGui.Name = "AimlockGUI"
-    mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    mainGui.IgnoreGuiInset = true
-    mainGui.DisplayOrder = 999
-    mainGui.ResetOnSpawn = false
-    mainGui.Parent = playerGui
-
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.new(0, 320, 0, 480)
-    mainFrame.Position = UDim2.new(0, 20, 0.5, -240)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-    mainFrame.BackgroundTransparency = 0.1
-    mainFrame.BorderSizePixel = 0
-    mainFrame.ClipsDescendants = true
-    mainFrame.Parent = mainGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 12)
-    corner.Parent = mainFrame
-
-    local header = Instance.new("Frame")
-    header.Size = UDim2.new(1, 0, 0, 50)
-    header.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-    header.BorderSizePixel = 0
-    header.Parent = mainFrame
-
-    local headerCorner = Instance.new("UICorner")
-    headerCorner.CornerRadius = UDim.new(0, 12)
-    headerCorner.Parent = header
-
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -20, 1, 0)
-    title.Position = UDim2.new(0, 20, 0, 0)
-    title.BackgroundTransparency = 1
-    title.Text = "AKTRON IS GOATED"
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextSize = 18
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = header
-
-    local subtitle = Instance.new("TextLabel")
-    subtitle.Size = UDim2.new(1, -20, 0, 20)
-    subtitle.Position = UDim2.new(0, 20, 0, 25)
-    subtitle.BackgroundTransparency = 1
-    subtitle.Text = "Advanced Aim Assistance + ESP"
-    subtitle.TextColor3 = Color3.fromRGB(180, 180, 180)
-    subtitle.TextSize = 12
-    subtitle.Font = Enum.Font.Gotham
-    subtitle.TextXAlignment = Enum.TextXAlignment.Left
-    subtitle.Parent = header
-
-    local closeButton = Instance.new("TextButton")
-    closeButton.Size = UDim2.new(0, 30, 0, 30)
-    closeButton.Position = UDim2.new(1, -35, 0.5, -15)
-    closeButton.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
-    closeButton.BorderSizePixel = 0
-    closeButton.Text = "X"
-    closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-    closeButton.TextSize = 14
-    closeButton.Font = Enum.Font.GothamBold
-    closeButton.Parent = header
-
-    local closeCorner = Instance.new("UICorner")
-    closeCorner.CornerRadius = UDim.new(0, 6)
-    closeCorner.Parent = closeButton
-
-    local statusFrame = Instance.new("Frame")
-    statusFrame.Size = UDim2.new(1, -40, 0, 50)
-    statusFrame.Position = UDim2.new(0, 20, 0, 55)
-    statusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-    statusFrame.BorderSizePixel = 0
-    statusFrame.Parent = mainFrame
-
-    local statusCorner = Instance.new("UICorner")
-    statusCorner.CornerRadius = UDim.new(0, 8)
-    statusCorner.Parent = statusFrame
-
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, -10, 0, 20)
-    statusLabel.Position = UDim2.new(0, 5, 0, 5)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "Status: Ready"
-    statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    statusLabel.TextSize = 11
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-    statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-    statusLabel.Parent = statusFrame
-
-    local fpsLabel = Instance.new("TextLabel")
-    fpsLabel.Size = UDim2.new(1, -10, 0, 20)
-    fpsLabel.Position = UDim2.new(0, 5, 0, 25)
-    fpsLabel.BackgroundTransparency = 1
-    fpsLabel.Text = "FPS: 0"
-    fpsLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    fpsLabel.TextSize = 11
-    fpsLabel.Font = Enum.Font.Gotham
-    fpsLabel.TextXAlignment = Enum.TextXAlignment.Left
-    fpsLabel.Parent = statusFrame
-
-    local contentFrame = Instance.new("Frame")
-    contentFrame.Size = UDim2.new(1, 0, 1, -110)
-    contentFrame.Position = UDim2.new(0, 0, 0, 110)
-    contentFrame.BackgroundTransparency = 1
-    contentFrame.Parent = mainFrame
-
-    local scrollFrame = Instance.new("ScrollingFrame")
-    scrollFrame.Size = UDim2.new(1, 0, 1, 0)
-    scrollFrame.BackgroundTransparency = 1
-    scrollFrame.BorderSizePixel = 0
-    scrollFrame.ScrollBarThickness = 6
-    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
-    scrollFrame.ScrollBarImageTransparency = 0.5
-    scrollFrame.VerticalScrollBarInset = Enum.ScrollBarInset.Always
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 550)
-    scrollFrame.Parent = contentFrame
-
-    local layout = Instance.new("UIListLayout")
-    layout.Padding = UDim.new(0, 10)
-    layout.Parent = scrollFrame
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 15)
-    padding.PaddingLeft = UDim.new(0, 20)
-    padding.PaddingRight = UDim.new(0, 20)
-    padding.Parent = scrollFrame
-
-    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
     end)
 
-    local function createToggle(toggleLabel, defaultValue, callback)
-        local toggleFrame = Instance.new("Frame")
-        toggleFrame.Size = UDim2.new(1, 0, 0, 40)
-        toggleFrame.BackgroundTransparency = 1
-        toggleFrame.Parent = scrollFrame
+    print("✅ Infinite Jump activated! Press Space to use.")
+end
 
-        local labelText = Instance.new("TextLabel")
-        labelText.Size = UDim2.new(0.7, 0, 1, 0)
-        labelText.BackgroundTransparency = 1
-        labelText.Text = toggleLabel
-        labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
-        labelText.TextSize = 14
-        labelText.Font = Enum.Font.Gotham
-        labelText.TextXAlignment = Enum.TextXAlignment.Left
-        labelText.Parent = toggleFrame
+-- =============================================
+-- DASH GUI SCRIPT
+-- =============================================
+do
+    -- Cleanup old
+    if CoreGui:FindFirstChild("DashGui") then
+        CoreGui:FindFirstChild("DashGui"):Destroy()
+    end
 
-        local toggleBackground = Instance.new("TextButton")
-        toggleBackground.Size = UDim2.new(0, 50, 0, 24)
-        toggleBackground.Position = UDim2.new(1, -50, 0.5, -12)
-        toggleBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-        toggleBackground.BorderSizePixel = 0
-        toggleBackground.Text = ""
-        toggleBackground.AutoButtonColor = false
-        toggleBackground.Parent = toggleFrame
+    -- GUI Setup
+    local gui = Instance.new("ScreenGui", CoreGui)
+    gui.Name = "DashGui"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
 
-        local toggleCorner = Instance.new("UICorner")
-        toggleCorner.CornerRadius = UDim.new(0, 12)
-        toggleCorner.Parent = toggleBackground
+    -- Center Message
+    local msg = Instance.new("TextLabel", gui)
+    msg.Size = UDim2.new(0, 400, 0, 50)
+    msg.Position = UDim2.new(0.5, -200, 0.4, 0)
+    msg.Text = "Double Tap W to Dash in Look Direction"
+    msg.Font = Enum.Font.GothamBlack
+    msg.TextSize = 22
+    msg.TextColor3 = Color3.new(1, 1, 1)
+    msg.BackgroundTransparency = 0.2
+    msg.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    Instance.new("UICorner", msg).CornerRadius = UDim.new(0, 6)
 
-        local toggleButton = Instance.new("Frame")
-        toggleButton.Size = UDim2.new(0, 20, 0, 20)
-        toggleButton.Position = UDim2.new(0, 2, 0.5, -10)
-        toggleButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        toggleButton.BorderSizePixel = 0
-        toggleButton.Parent = toggleBackground
+    -- Fade out after 5 seconds
+    task.delay(5, function()
+        local fade = TweenService:Create(msg, TweenInfo.new(1), {TextTransparency = 1, BackgroundTransparency = 1})
+        fade:Play()
+        fade.Completed:Wait()
+        msg:Destroy()
+    end)
 
-        local buttonCorner = Instance.new("UICorner")
-        buttonCorner.CornerRadius = UDim.new(0, 10)
-        buttonCorner.Parent = toggleButton
+    -- Dash logic
+    local dashEnabled = true
+    local dashCooldown = false
+    local dashDistance = 40
+    local dashTime = 0.30
 
-        local state = defaultValue
+    -- Double tap tracking for W only
+    local lastWTapTime = 0
+    local doubleTapThreshold = 0.3 -- seconds between taps
+
+    -- Dash function
+    local function performDash()
+        if not dashEnabled or dashCooldown then return end
         
-        local function updateToggle()
-            if state then
-                toggleButton.Position = UDim2.new(1, -22, 0.5, -10)
-                toggleButton.BackgroundColor3 = Color3.fromRGB(0, 255, 127)
-                toggleBackground.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-            else
-                toggleButton.Position = UDim2.new(0, 2, 0.5, -10)
-                toggleButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-                toggleBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-            end
-            callback(state)
+        local char = LocalPlayer.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+        local hrp = char.HumanoidRootPart
+
+        -- Get camera look direction (where player is looking)
+        local camera = Workspace.CurrentCamera
+        local lookVector = camera.CFrame.LookVector
+        
+        -- Remove Y component to keep dash horizontal, then normalize
+        local horizontalLookVector = Vector3.new(lookVector.X, 0, lookVector.Z)
+        if horizontalLookVector.Magnitude > 0 then
+            horizontalLookVector = horizontalLookVector.Unit
+        else
+            -- Fallback to character forward if looking straight up/down
+            horizontalLookVector = hrp.CFrame.LookVector * Vector3.new(1, 0, 1)
+            horizontalLookVector = horizontalLookVector.Unit
         end
+        
+        -- Dash in look direction
+        local dirVec = horizontalLookVector * dashDistance
 
-        toggleBackground.MouseButton1Click:Connect(function()
-            state = not state
-            updateToggle()
+        -- Slide dash via Tween
+        local goal = hrp.Position + dirVec
+        local tween = TweenService:Create(hrp, TweenInfo.new(dashTime, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+            CFrame = CFrame.new(goal, goal + horizontalLookVector)
+        })
+        tween:Play()
+
+        -- Particle FX
+        local attachment = Instance.new("Attachment", hrp)
+        local emitter = Instance.new("ParticleEmitter", attachment)
+        emitter.Texture = "rbxassetid://9119048717" -- basic wind swirl
+        emitter.Rate = 999
+        emitter.Lifetime = NumberRange.new(0.2)
+        emitter.Speed = NumberRange.new(0)
+        emitter.Size = NumberSequence.new(1)
+        emitter.Rotation = NumberRange.new(0, 360)
+        emitter.SpreadAngle = Vector2.new(360, 360)
+        Debris:AddItem(attachment, 0.3)
+
+        -- Cooldown
+        dashCooldown = true
+        task.delay(0.5, function()
+            dashCooldown = false
         end)
+    end
 
-        updateToggle()
-        return {
-            SetState = function(newState) 
-                state = newState 
-                updateToggle() 
+    -- Double tap detection for W only
+    UserInputService.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        
+        if input.KeyCode == Enum.KeyCode.W then
+            local currentTime = tick()
+            
+            -- Check if this is a double tap
+            if currentTime - lastWTapTime <= doubleTapThreshold then
+                -- Double tap detected - perform dash
+                performDash()
+                -- Reset the timer to prevent triple-tap detection
+                lastWTapTime = 0
+            else
+                -- First tap - record the time
+                lastWTapTime = currentTime
             end
+        end
+    end)
+
+    print("✅ Dash GUI activated! Double-tap W to dash.")
+end
+
+-- =============================================
+-- SHIFT LOCK SCRIPT
+-- =============================================
+do
+    local ref = cloneref or function(x) return x end
+    local S = function(n) return ref(game:GetService(n)) end
+
+    local Plrs, Tw, UIS, RS, Wk, CG = Players, TweenService, UserInputService, RunService, Workspace, CoreGui
+    local plr = LocalPlayer
+
+    local function NA(i)
+        if not i then return end
+        i.Name = "\0"
+        i.Archivable = false
+    end
+
+    local function parentUI(g)
+        if gethui then
+            NA(g); g.Parent = gethui(); return g
+        elseif CG and CG:FindFirstChild("RobloxGui") then
+            NA(g); g.Parent = CG:FindFirstChild("RobloxGui"); return g
+        elseif CG then
+            NA(g); g.Parent = CG; return g
+        elseif plr and plr:FindFirstChildWhichIsA("PlayerGui") then
+            NA(g); g.Parent = plr:FindFirstChildWhichIsA("PlayerGui"); g.ResetOnSpawn = false; return g
+        end
+        return g
+    end
+
+    local function getParts()
+        local c = plr.Character or plr.CharacterAdded:Wait()
+        local hum, hrp
+        for _,d in ipairs(c:GetDescendants()) do
+            if not hum and d:IsA("Humanoid") then hum = d end
+            if not hrp and d:IsA("BasePart") and d.Name == "HumanoidRootPart" then hrp = d end
+            if hum and hrp then break end
+        end
+        hum = hum or c:WaitForChild("Humanoid")
+        hrp = hrp or c:WaitForChild("HumanoidRootPart")
+        return c, hum, hrp
+    end
+
+    local function lockMouse(v)
+        if UIS.MouseEnabled then
+            UIS.MouseBehavior = v and Enum.MouseBehavior.LockCenter or Enum.MouseBehavior.Default
+        end
+    end
+
+    local rotCon, oldAR
+    local function faceCam(h, hrp, v)
+        if rotCon then rotCon:Disconnect() rotCon = nil end
+        if v then
+            oldAR = h.AutoRotate
+            h.AutoRotate = false
+            rotCon = RS.RenderStepped:Connect(function()
+                local cam = Wk.CurrentCamera
+                if not (hrp and cam) then return end
+                local lv = cam.CFrame.LookVector
+                local flat = Vector3.new(lv.X, 0, lv.Z)
+                if flat.Magnitude > 1e-4 then
+                    hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + flat.Unit, Vector3.yAxis)
+                end
+            end)
+        else
+            if oldAR ~= nil then h.AutoRotate = oldAR end
+        end
+    end
+
+    local function reapply(v)
+        task.defer(function()
+            local _, h, r = getParts()
+            lockMouse(v)
+            faceCam(h, r, v)
+        end)
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "ShiftLockUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+    gui.DisplayOrder = 10000
+    parentUI(gui)
+
+    local btn = Instance.new("ImageButton")
+    btn.Name = "LockBtn"
+    btn.AnchorPoint = Vector2.new(0.5, 0.5)
+    btn.Size = UDim2.fromOffset(64, 64)
+    btn.Position = UDim2.new(1, -96, 1, -96)
+    btn.BackgroundColor3 = Color3.fromRGB(34, 34, 38)
+    btn.AutoButtonColor = false
+    btn.Image = ""
+    btn.Active = true
+    btn.Parent = gui
+
+    local cr = Instance.new("UICorner")
+    cr.CornerRadius = UDim.new(1, 0)
+    cr.Parent = btn
+
+    local strk = Instance.new("UIStroke")
+    strk.Thickness = 2
+    strk.Color = Color3.fromRGB(0, 140, 255)
+    strk.Transparency = 0.25
+    strk.Parent = btn
+
+    local grd = Instance.new("UIGradient")
+    grd.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(45,45,50)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(27,27,30))
+    }
+    grd.Rotation = 45
+    grd.Parent = btn
+
+    local icn = Instance.new("ImageLabel")
+    icn.Name = "Icn"
+    icn.BackgroundTransparency = 1
+    icn.AnchorPoint = Vector2.new(0.5, 0.5)
+    icn.Position = UDim2.fromScale(0.5, 0.5)
+    icn.Size = UDim2.fromScale(0.62, 0.62)
+    icn.Image = "rbxasset://textures/ui/mouseLock_off.png"
+    icn.ImageColor3 = Color3.fromRGB(255,255,255)
+    icn.ScaleType = Enum.ScaleType.Fit
+    icn.Parent = btn
+
+    local shd = Instance.new("Frame")
+    shd.Name = "Shd"
+    shd.AnchorPoint = Vector2.new(0.5, 0.5)
+    shd.Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, btn.Position.Y.Scale, btn.Position.Y.Offset + 6)
+    shd.Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset + 12, btn.Size.Y.Scale, btn.Size.Y.Offset + 12)
+    shd.BackgroundColor3 = Color3.new(0,0,0)
+    shd.BackgroundTransparency = 0.8
+    shd.ZIndex = 0
+    shd.Parent = gui
+
+    local shdC = Instance.new("UICorner")
+    shdC.CornerRadius = UDim.new(1, 0)
+    shdC.Parent = shd
+
+    local xBtn = Instance.new("TextButton")
+    xBtn.Name = "Close"
+    xBtn.AnchorPoint = Vector2.new(1, 0)
+    xBtn.Position = UDim2.new(1, 6, 0, -6)
+    xBtn.Size = UDim2.fromOffset(22, 22)
+    xBtn.BackgroundColor3 = Color3.fromRGB(230, 60, 60)
+    xBtn.AutoButtonColor = true
+    xBtn.Text = "×"
+    xBtn.TextScaled = true
+    xBtn.TextColor3 = Color3.new(1,1,1)
+    xBtn.Parent = btn
+
+    local xC = Instance.new("UICorner")
+    xC.CornerRadius = UDim.new(1,0)
+    xC.Parent = xBtn
+
+    local xS = Instance.new("UIStroke")
+    xS.Thickness = 1
+    xS.Transparency = 0.3
+    xS.Parent = xBtn
+
+    local sc = Instance.new("UIScale")
+    sc.Scale = 0.9
+    sc.Parent = btn
+    Tw:Create(sc, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Scale = 1}):Play()
+
+    local tH = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local tP = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local tT = TweenInfo.new(0.18, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+    local tLoop = TweenInfo.new(1.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true, 0)
+
+    Tw:Create(strk, tLoop, {Transparency = 0.4}):Play()
+
+    local over = false
+    btn.MouseEnter:Connect(function()
+        over = true
+        Tw:Create(btn, tH, {Size = UDim2.fromOffset(70, 70)}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        over = false
+        Tw:Create(btn, tH, {Size = UDim2.fromOffset(64, 64)}):Play()
+    end)
+
+    local function pulse()
+        local p = Instance.new("Frame")
+        p.Name = "Pulse"
+        p.AnchorPoint = Vector2.new(0.5,0.5)
+        p.Position = UDim2.fromScale(0.5,0.5)
+        p.Size = UDim2.fromOffset(0,0)
+        p.BackgroundColor3 = Color3.new(1,1,1)
+        p.BackgroundTransparency = 0.65
+        p.ZIndex = btn.ZIndex + 1
+        local pc = Instance.new("UICorner"); pc.CornerRadius = UDim.new(1,0); pc.Parent = p
+        p.Parent = btn
+        local m = math.max(btn.AbsoluteSize.X, btn.AbsoluteSize.Y) * 1.15
+        Tw:Create(p, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(m,m), BackgroundTransparency = 1}):Play()
+        task.delay(0.24, function() p:Destroy() end)
+    end
+
+    btn.MouseButton1Down:Connect(function()
+        Tw:Create(btn, tP, {Size = UDim2.fromOffset(58,58)}):Play()
+        Tw:Create(strk, tP, {Thickness = 3, Transparency = 0.1}):Play()
+        pulse()
+    end)
+    btn.MouseButton1Up:Connect(function()
+        Tw:Create(btn, tP, {Size = over and UDim2.fromOffset(70,70) or UDim2.fromOffset(64,64)}):Play()
+        Tw:Create(strk, tP, {Thickness = 2, Transparency = 0.25}):Play()
+    end)
+
+    local function shn()
+        local s = Instance.new("Frame")
+        s.Name = "Shn"
+        s.BackgroundTransparency = 1
+        s.Size = UDim2.fromScale(1,1)
+        s.ClipsDescendants = true
+        s.Parent = btn
+
+        local b = Instance.new("Frame")
+        b.AnchorPoint = Vector2.new(0.5,0.5)
+        b.Position = UDim2.fromScale(-0.2, 0.5)
+        b.Size = UDim2.new(0, 10, 1.4, 0)
+        b.BackgroundColor3 = Color3.fromRGB(255,255,255)
+        b.BackgroundTransparency = 0.85
+        local g = Instance.new("UIGradient")
+        g.Transparency = NumberSequence.new{
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.5, 0.5),
+            NumberSequenceKeypoint.new(1, 1)
         }
+        g.Rotation = 20
+        g.Parent = b
+        b.Parent = s
+
+        local tw = Tw:Create(b, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.fromScale(1.2, 0.5)})
+        tw:Play()
+        tw.Completed:Connect(function() s:Destroy() end)
     end
 
-    local function createSlider(sliderLabel, minValue, maxValue, defaultValue, callback)
-        local sliderFrame = Instance.new("Frame")
-        sliderFrame.Size = UDim2.new(1, 0, 0, 60)
-        sliderFrame.BackgroundTransparency = 1
-        sliderFrame.Parent = scrollFrame
+    local drag = false
+    local dStart, pStart
 
-        local labelFrame = Instance.new("Frame")
-        labelFrame.Size = UDim2.new(1, 0, 0, 20)
-        labelFrame.BackgroundTransparency = 1
-        labelFrame.Parent = sliderFrame
-
-        local labelText = Instance.new("TextLabel")
-        labelText.Size = UDim2.new(0.7, 0, 1, 0)
-        labelText.BackgroundTransparency = 1
-        labelText.Text = sliderLabel
-        labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
-        labelText.TextSize = 14
-        labelText.Font = Enum.Font.Gotham
-        labelText.TextXAlignment = Enum.TextXAlignment.Left
-        labelText.Parent = labelFrame
-
-        local valueText = Instance.new("TextLabel")
-        valueText.Size = UDim2.new(0.3, 0, 1, 0)
-        valueText.Position = UDim2.new(0.7, 0, 0, 0)
-        valueText.BackgroundTransparency = 1
-        valueText.Text = tostring(defaultValue)
-        valueText.TextColor3 = Color3.fromRGB(200, 200, 200)
-        valueText.TextSize = 14
-        valueText.Font = Enum.Font.Gotham
-        valueText.TextXAlignment = Enum.TextXAlignment.Right
-        valueText.Parent = labelFrame
-
-        local sliderContainer = Instance.new("TextButton")
-        sliderContainer.Size = UDim2.new(1, 0, 0, 30)
-        sliderContainer.Position = UDim2.new(0, 0, 0, 30)
-        sliderContainer.BackgroundTransparency = 1
-        sliderContainer.Text = ""
-        sliderContainer.AutoButtonColor = false
-        sliderContainer.Parent = sliderFrame
-
-        local sliderBackground = Instance.new("Frame")
-        sliderBackground.Size = UDim2.new(1, 0, 0, 6)
-        sliderBackground.Position = UDim2.new(0, 0, 0.5, -3)
-        sliderBackground.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-        sliderBackground.BorderSizePixel = 0
-        sliderBackground.Parent = sliderContainer
-
-        local bgCorner = Instance.new("UICorner")
-        bgCorner.CornerRadius = UDim.new(0, 3)
-        bgCorner.Parent = sliderBackground
-
-        local sliderFill = Instance.new("Frame")
-        sliderFill.Size = UDim2.new((defaultValue - minValue) / (maxValue - minValue), 0, 1, 0)
-        sliderFill.BackgroundColor3 = Color3.fromRGB(0, 255, 127)
-        sliderFill.BorderSizePixel = 0
-        sliderFill.Parent = sliderBackground
-
-        local fillCorner = Instance.new("UICorner")
-        fillCorner.CornerRadius = UDim.new(0, 3)
-        fillCorner.Parent = sliderFill
-
-        local sliderButton = Instance.new("TextButton")
-        sliderButton.Size = UDim2.new(0, 20, 0, 20)
-        sliderButton.Position = UDim2.new((defaultValue - minValue) / (maxValue - minValue), -10, 0.5, -10)
-        sliderButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        sliderButton.BorderSizePixel = 0
-        sliderButton.Text = ""
-        sliderButton.ZIndex = 2
-        sliderButton.Parent = sliderContainer
-
-        local buttonCorner = Instance.new("UICorner")
-        buttonCorner.CornerRadius = UDim.new(0, 10)
-        buttonCorner.Parent = sliderButton
-
-        local dragging = false
-        
-        local function updateSlider(value)
-            local normalized = math.clamp((value - minValue) / (maxValue - minValue), 0, 1)
-            sliderFill.Size = UDim2.new(normalized, 0, 1, 0)
-            sliderButton.Position = UDim2.new(normalized, -10, 0.5, -10)
-            valueText.Text = string.format("%.2f", value)
-            callback(value)
-        end
-
-        sliderButton.MouseButton1Down:Connect(function()
-            dragging = true
-        end)
-
-        sliderContainer.MouseButton1Down:Connect(function(x, y)
-            local relativeX = x - sliderBackground.AbsolutePosition.X
-            local normalized = math.clamp(relativeX / sliderBackground.AbsoluteSize.X, 0, 1)
-            local value = minValue + (maxValue - minValue) * normalized
-            updateSlider(value)
-            dragging = true
-        end)
-
-        UserInput.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 then
-                dragging = false
-            end
-        end)
-
-        UserInput.InputChanged:Connect(function(input)
-            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                local mousePos = UserInput:GetMouseLocation()
-                local relativeX = mousePos.X - sliderBackground.AbsolutePosition.X
-                local normalized = math.clamp(relativeX / sliderBackground.AbsoluteSize.X, 0, 1)
-                local value = minValue + (maxValue - minValue) * normalized
-                updateSlider(value)
-            end
-        end)
-
-        updateSlider(defaultValue)
-        return {
-            SetValue = function(value) 
-                updateSlider(value) 
-            end
-        }
+    local function clampUD(pos)
+        local scr = gui.AbsoluteSize
+        local half = btn.AbsoluteSize/2
+        local absX = pos.X.Scale * scr.X + pos.X.Offset
+        local absY = pos.Y.Scale * scr.Y + pos.Y.Offset
+        local x = math.clamp(absX, half.X + 8, scr.X - half.X - 8)
+        local y = math.clamp(absY, half.Y + 8, scr.Y - half.Y - 8)
+        return UDim2.new(pos.X.Scale, x - pos.X.Scale * scr.X, pos.Y.Scale, y - pos.Y.Scale * scr.Y)
     end
 
-    -- Toggles
-    local enabledToggle = createToggle("Aimlock Enabled", baseConfig.Enabled, function(state)
-        baseConfig.Enabled = state
-    end)
-
-    local teamCheckToggle = createToggle("Team Check", baseConfig.TeamCheck, function(state)
-        baseConfig.TeamCheck = state
-    end)
-
-    local predictionToggle = createToggle("Prediction", baseConfig.UsePrediction, function(state)
-        baseConfig.UsePrediction = state
-    end)
-
-    local chamsToggle = createToggle("Chams ESP", baseConfig.ChamsEnabled, function(state)
-        baseConfig.ChamsEnabled = state
-        ChamsESP.Enabled = state
-        updateAllChams()
-        updateAllNameDisplays()
-    end)
-
-    local chamsTeamToggle = createToggle("Chams Team Check", baseConfig.ChamsTeamCheck, function(state)
-        baseConfig.ChamsTeamCheck = state
-        ChamsESP.TeamCheck = state
-        updateAllChams()
-        updateAllNameDisplays()
-    end)
-
-    local drawFOVToggle = createToggle("Draw FOV Circle", baseConfig.DrawFOV, function(state)
-        baseConfig.DrawFOV = state
-        if state then
-            createFOVCircle()
-        else
-            if FOVCircle then
-                FOVCircle.Parent:Remove()
-                FOVCircle = nil
-            end
-        end
-    end)
-
-    local infiniteJumpToggle = createToggle("Infinite Jump", baseConfig.InfiniteJumpEnabled, function(state)
-        baseConfig.InfiniteJumpEnabled = state
-    end)
-
-    local securityDisablerToggle = createToggle("Security Disabler", baseConfig.SecurityDisablerEnabled, function(state)
-        baseConfig.SecurityDisablerEnabled = state
-        SecurityDisabler.Enabled = state
-        setupSecurityDisabler()
-    end)
-
-    -- Sliders
-    local smoothingSlider = createSlider("Magnetic Strength", 0.1, 1.0, baseConfig.Smoothing, function(value)
-        baseConfig.Smoothing = value
-    end)
-
-    local predictionSlider = createSlider("Prediction Amount", 0.05, 0.3, baseConfig.Prediction, function(value)
-        baseConfig.Prediction = value
-    end)
-
-    local fovSlider = createSlider("Field of View", 30, 360, baseConfig.FOV, function(value)
-        baseConfig.FOV = value
-        updateFOVCircle()
-    end)
-
-    local dragging = false
-    local dragStart = nil
-    local startPos = nil
-
-    local function updateDrag(input)
-        if not dragging then return end
-        
-        local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(
-            startPos.X.Scale, 
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale, 
-            startPos.Y.Offset + delta.Y
-        )
-    end
-
-    header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = mainFrame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
+    btn.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            drag = true
+            dStart = i.Position
+            pStart = btn.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then
+                    drag = false
                 end
             end)
         end
     end)
 
-    UserInput.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
-            updateDrag(input)
+    btn.InputChanged:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then
+            if drag and dStart and pStart then
+                local d = i.Position - dStart
+                local np = UDim2.new(pStart.X.Scale, pStart.X.Offset + d.X, pStart.Y.Scale, pStart.Y.Offset + d.Y)
+                btn.Position = clampUD(np)
+            end
         end
     end)
 
-    closeButton.MouseButton1Click:Connect(function()
-        mainGui.Enabled = false
+    RS.RenderStepped:Connect(function()
+        shd.Position = UDim2.new(btn.Position.X.Scale, btn.Position.X.Offset, btn.Position.Y.Scale, btn.Position.Y.Offset + 6)
+        shd.Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset + 12, btn.Size.Y.Scale, btn.Size.Y.Offset + 12)
     end)
 
-    local controlTable = {
-        SetStatus = function(text) 
-            statusLabel.Text = "Status: " .. tostring(text)
-        end,
-        UpdateFPS = function(fps)
-            fpsLabel.Text = "FPS: " .. fps
-        end,
-        UpdateEnabled = function(state) 
-            enabledToggle.SetState(state) 
-        end,
-        UpdateTeamCheck = function(state)
-            teamCheckToggle.SetState(state)
-        end,
-        UpdatePrediction = function(state) 
-            predictionToggle.SetState(state) 
-        end,
-        UpdateSmoothing = function(value) 
-            smoothingSlider.SetValue(value) 
-        end,
-        UpdateChams = function(state)
-            chamsToggle.SetState(state)
-        end,
-        UpdateChamsTeam = function(state)
-            chamsTeamToggle.SetState(state)
-        end,
-        UpdateDrawFOV = function(state)
-            drawFOVToggle.SetState(state)
-        end,
-        UpdateInfiniteJump = function(state)
-            infiniteJumpToggle.SetState(state)
-        end,
-        UpdateSecurityDisabler = function(state)
-            securityDisablerToggle.SetState(state)
-        end,
-        ToggleVisibility = function()
-            mainGui.Enabled = not mainGui.Enabled
-        end,
-        GetGUI = function()
-            return mainGui
-        end,
-        IsValid = function()
-            return mainGui and mainGui.Parent ~= nil
-        end
-    }
-    
-    return controlTable
-end
+    local on = false
+    local icOn, icOff = "rbxasset://textures/ui/mouseLock_on.png", "rbxasset://textures/ui/mouseLock_off.png"
 
--- Function to initialize or recreate GUI
-local function ensureGUI()
-    if not GUI or not GUI.IsValid or not GUI.IsValid() then
-        GUI = createModernGUI()
-        GUI.SetStatus("GUI Initialized - Hold LeftCtrl | Press RightCtrl to hide/show")
+    local function apply(v)
+        local _, h, r = getParts()
+        on = v
+        lockMouse(v)
+        faceCam(h, r, v)
+        Tw:Create(strk, tT, {Color = v and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(0, 140, 255), Thickness = v and 3 or 2}):Play()
+        Tw:Create(btn, tT, {BackgroundColor3 = v and Color3.fromRGB(38, 48, 60) or Color3.fromRGB(34, 34, 38)}):Play()
+        Tw:Create(icn, tT, {ImageColor3 = v and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(255,255,255)}):Play()
+        icn.Image = v and icOn or icOff
+        shn()
     end
-end
 
--- Initialize GUI
-ensureGUI()
-
--- Auto-recreate GUI when player respawns
-AddConnection(LocalPlayer.CharacterAdded:Connect(function()
-    wait(2)
-    ensureGUI()
-    wait(0.5)
-    initializeChams()
-    setupFastCharacterMonitoring()
-    if baseConfig.DrawFOV then
-        createFOVCircle()
-    end
-end))
-
--- Initialize systems
-initializeChams()
-setupFastCharacterMonitoring()
-SetupInfiniteJump()
-setupSecurityDisabler()
-if baseConfig.DrawFOV then
-    createFOVCircle()
-end
-
--- Team check function
-local function isTeammate(player)
-    if not baseConfig.TeamCheck then
-        return false
-    end
-    
-    if not LocalPlayer.Team then
-        return false
-    end
-    
-    return player.Team == LocalPlayer.Team
-end
-
--- Enhanced death detection function
-local function isPlayerAlive(player)
-    if not player.Character then
-        return false
-    end
-    
-    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then
-        return false
-    end
-    
-    -- Check health
-    if humanoid.Health <= 0 then
-        return false
-    end
-    
-    -- Check if humanoid is in a dead state
-    local humanoidState = humanoid:GetState()
-    if humanoidState == Enum.HumanoidStateType.Dead then
-        return false
-    end
-    
-    -- Additional check: if the character is falling through the map (below kill plane)
-    local rootPart = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Head")
-    if rootPart then
-        -- Most games have kill zones below -500 studs
-        if rootPart.Position.Y < -500 then
-            return false
+    -- Alt key toggle functionality
+    local function handleInput(input, gameProcessed)
+        if gameProcessed then return end
+        
+        if input.KeyCode == Enum.KeyCode.LeftAlt or input.KeyCode == Enum.KeyCode.RightAlt then
+            if input.UserInputState == Enum.UserInputState.Begin then
+                apply(not on)
+            end
         end
     end
-    
-    return true
-end
 
--- Function to check if player is valid target (alive and not falling through map)
-local function isValidTarget(player)
-    if not player.Character then
-        return false
-    end
-    
-    if not isPlayerAlive(player) then
-        return false
-    end
-    
-    local rootPart = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Head")
-    if not rootPart then
-        return false
-    end
-    
-    -- Additional safety check: if character is too far below map
-    if rootPart.Position.Y < -1000 then
-        return false
-    end
-    
-    return true
-end
+    UIS.InputBegan:Connect(handleInput)
 
--- FOV implementation
-local function findBestTarget()
-    local bestTarget = nil
-    local closestDistance = math.huge
-    
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        if not player.Character then continue end
-        
-        if isTeammate(player) then
-            continue
-        end
-        
-        -- Use enhanced target validation
-        if not isValidTarget(player) then
-            continue
-        end
-        
-        local aimPart = player.Character:FindFirstChild("Head") or 
-                       player.Character:FindFirstChild("HumanoidRootPart")
-        
-        if not aimPart then continue end
-        
-        local distance = (aimPart.Position - Camera.CFrame.Position).Magnitude
-        if distance > baseConfig.MaxDistance then continue end
-        
-        local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
-        if not onScreen then continue end
-        
-        local mousePos = UserInput:GetMouseLocation()
-        local distanceToMouse = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-        
-        local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        local distanceToCenter = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-        
-        if distanceToCenter > (baseConfig.FOV / 2) then
-            continue
-        end
-        
-        if distanceToMouse < closestDistance then
-            closestDistance = distanceToMouse
-            bestTarget = player
-        end
-    end
-    
-    return bestTarget
-end
-
-local function smoothAimAt(targetPos)
-    if not targetPos then return end
-    
-    local currentCFrame = Camera.CFrame
-    local targetCFrame = CFrame.new(currentCFrame.Position, targetPos)
-    
-    local magneticStrength = 1 - baseConfig.Smoothing
-    
-    local smoothedCFrame = currentCFrame:Lerp(targetCFrame, magneticStrength)
-    
-    local success, err = pcall(function()
-        Camera.CFrame = smoothedCFrame
+    btn.Activated:Connect(function()
+        apply(not on)
     end)
-    
-    if not success then
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Camera error")
+
+    xBtn.Activated:Connect(function()
+        if on then apply(false) end
+        Tw:Create(sc, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Scale = 0.8}):Play()
+        Tw:Create(btn, TweenInfo.new(0.18, Enum.EasingStyle.Sine, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play()
+        Tw:Create(strk, TweenInfo.new(0.12), {Transparency = 1}):Play()
+        task.delay(0.2, function() gui:Destroy() end)
+    end)
+
+    plr.CharacterAdded:Connect(function()
+        reapply(on)
+    end)
+
+    local lastCam = Wk.CurrentCamera
+    Wk:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        local c = Wk.CurrentCamera
+        if c ~= lastCam then
+            lastCam = c
+            reapply(on)
         end
-    end
+    end)
+
+    print("✅ Shift Lock GUI activated! Click button or press Alt to toggle.")
 end
 
-local mouseMovementResistance = 0
-local lastMousePos = UserInput:GetMouseLocation()
-
-AddConnection(UserInput.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        local currentMousePos = UserInput:GetMouseLocation()
-        local mouseDelta = (currentMousePos - lastMousePos).Magnitude
-        lastMousePos = currentMousePos
-        
-        if mouseDelta > 5 then
-            mouseMovementResistance = math.min(mouseMovementResistance + 0.1, 1.0)
-        else
-            mouseMovementResistance = math.max(mouseMovementResistance - 0.05, 0)
-        end
-    end
-end))
-
-local isAiming = false
-local currentTarget = nil
-
-AddConnection(UserInput.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    
-    -- Aimlock with LeftControl
-    if input.KeyCode == baseConfig.AimButton and baseConfig.Enabled then
-        isAiming = true
-        mouseMovementResistance = 0
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Finding target...")
-        end
-    end
-    
-    -- GUI toggle with RightControl
-    if input.KeyCode == Enum.KeyCode.RightControl then
-        if GUI and GUI.ToggleVisibility then
-            GUI.ToggleVisibility()
-        else
-            ensureGUI()
-        end
-    end
-end))
-
-AddConnection(UserInput.InputEnded:Connect(function(input, gameProcessed)
-    if input.KeyCode == baseConfig.AimButton then
-        isAiming = false
-        currentTarget = nil
-        mouseMovementResistance = 0
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Ready - Hold LeftCtrl")
-        end
-    end
-end))
-
-AddConnection(RunService.RenderStepped:Connect(function()
-    if not GUI or not GUI.IsValid or not GUI.IsValid() then
-        ensureGUI()
-    end
-    
-    if not baseConfig.Enabled or not isAiming then return end
-    
-    -- Enhanced target validation with better death detection
-    if currentTarget then
-        local isValid = isValidTarget(currentTarget)
-        
-        if not isValid then
-            if GUI and GUI.SetStatus then
-                GUI.SetStatus("Target invalid, finding new target...")
-            end
-            currentTarget = findBestTarget()
-            if currentTarget then
-                if GUI and GUI.SetStatus then
-                    GUI.SetStatus("Locked: " .. currentTarget.Name)
-                end
-            else
-                if GUI and GUI.SetStatus then
-                    GUI.SetStatus("No valid targets found")
-                end
-                return
-            end
-        end
-    end
-    
-    if not currentTarget then
-        currentTarget = findBestTarget()
-        if not currentTarget then
-            if GUI and GUI.SetStatus then
-                GUI.SetStatus("No targets found")
-            end
-            return
-        end
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Locked: " .. currentTarget.Name)
-        end
-    end
-    
-    -- Validate target
-    if not currentTarget.Character then
-        currentTarget = nil
-        return
-    end
-    
-    if baseConfig.TeamCheck and isTeammate(currentTarget) then
-        currentTarget = nil
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Target is teammate")
-        end
-        return
-    end
-    
-    -- Use enhanced validation
-    if not isValidTarget(currentTarget) then
-        currentTarget = nil
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Target died")
-        end
-        return
-    end
-    
-    local aimPart = currentTarget.Character:FindFirstChild("Head") or 
-                   currentTarget.Character:FindFirstChild("HumanoidRootPart")
-    
-    if not aimPart then
-        currentTarget = nil
-        return
-    end
-    
-    -- Additional check - if aim part is too far underground
-    if aimPart.Position.Y < -500 then
-        currentTarget = nil
-        if GUI and GUI.SetStatus then
-            GUI.SetStatus("Target underground")
-        end
-        return
-    end
-    
-    local targetPos = aimPart.Position
-    if baseConfig.UsePrediction then
-        targetPos = targetPos + (aimPart.Velocity * baseConfig.Prediction)
-    end
-    
-    local effectiveMagneticStrength = baseConfig.Smoothing
-    if mouseMovementResistance > 0.3 then
-        effectiveMagneticStrength = math.min(baseConfig.Smoothing + mouseMovementResistance, 1.0)
-    end
-    
-    local originalSmoothness = baseConfig.Smoothing
-    baseConfig.Smoothing = effectiveMagneticStrength
-    
-    smoothAimAt(targetPos)
-    
-    baseConfig.Smoothing = originalSmoothness
-    
-    if GUI and GUI.SetStatus then
-        local distance = (targetPos - Camera.CFrame.Position).Magnitude
-        local teamStatus = baseConfig.TeamCheck and " (Team Check ON)" or " (Team Check OFF)"
-        local magneticInfo = string.format(" | Magnetic: %.0f%%", (1 - baseConfig.Smoothing) * 100)
-        GUI.SetStatus("Locked: " .. currentTarget.Name .. " | " .. math.floor(distance) .. " studs" .. magneticInfo)
-    end
-end))
-
--- Return config with GUI controls
-local config = {
-    GUI = GUI,
-    ChamsESP = ChamsESP,
-    SecurityDisabler = SecurityDisabler,
-    setEnabled = function(state) 
-        baseConfig.Enabled = state 
-        if GUI and GUI.UpdateEnabled then
-            GUI.UpdateEnabled(state)
-        end
-    end,
-    setTeamCheck = function(state)
-        baseConfig.TeamCheck = state
-        if GUI and GUI.UpdateTeamCheck then
-            GUI.UpdateTeamCheck(state)
-        end
-    end,
-    setPrediction = function(state) 
-        baseConfig.UsePrediction = state 
-        if GUI and GUI.UpdatePrediction then
-            GUI.UpdatePrediction(state)
-        end
-    end,
-    setSmoothing = function(value) 
-        baseConfig.Smoothing = value 
-        if GUI and GUI.UpdateSmoothing then
-            GUI.UpdateSmoothing(value)
-        end
-    end,
-    setChamsEnabled = function(state)
-        baseConfig.ChamsEnabled = state
-        ChamsESP.Enabled = state
-        updateAllChams()
-        updateAllNameDisplays()
-        if GUI and GUI.UpdateChams then
-            GUI.UpdateChams(state)
-        end
-    end,
-    setChamsTeamCheck = function(state)
-        baseConfig.ChamsTeamCheck = state
-        ChamsESP.TeamCheck = state
-        updateAllChams()
-        updateAllNameDisplays()
-        if GUI and GUI.UpdateChamsTeam then
-            GUI.UpdateChamsTeam(state)
-        end
-    end,
-    setDrawFOV = function(state)
-        baseConfig.DrawFOV = state
-        if state then
-            createFOVCircle()
-        else
-            if FOVCircle then
-                FOVCircle.Parent:Remove()
-                FOVCircle = nil
-            end
-        end
-        if GUI and GUI.UpdateDrawFOV then
-            GUI.UpdateDrawFOV(state)
-        end
-    end,
-    setFOV = function(value)
-        baseConfig.FOV = value
-        updateFOVCircle()
-    end,
-    setInfiniteJump = function(state)
-        baseConfig.InfiniteJumpEnabled = state
-        if GUI and GUI.UpdateInfiniteJump then
-            GUI.UpdateInfiniteJump(state)
-        end
-    end,
-    setSecurityDisabler = function(state)
-        baseConfig.SecurityDisablerEnabled = state
-        SecurityDisabler.Enabled = state
-        setupSecurityDisabler()
-        if GUI and GUI.UpdateSecurityDisabler then
-            GUI.UpdateSecurityDisabler(state)
-        end
-    end,
-    toggleGUI = function()
-        if GUI and GUI.ToggleVisibility then
-            GUI.ToggleVisibility()
-        else
-            ensureGUI()
-        end
-    end,
-    recreateGUI = function()
-        ensureGUI()
-    end,
-    cleanupMemory = function()
-        CleanupAll()
-        -- Reinitialize systems
-        initializeChams()
-        setupSecurityDisabler()
-        if baseConfig.DrawFOV then createFOVCircle() end
-    end
-}
-
-return setmetatable(config, {
-    __index = baseConfig,
-    __newindex = function(t, k, v)
-        baseConfig[k] = v
-    end
-})
+-- =============================================
+-- FINAL CONFIRMATION
+-- =============================================
+print("🎮 ALL FEATURES ACTIVATED SUCCESSFULLY!")
+print("• Infinite Jump: Press SPACE in air")
+print("• Dash: Double-tap W")
+print("• Shift Lock: Click GUI button or press ALT")
+print("• NoClip: Press N to toggle (Green circle = active)")
+print("• Security Systems: Lasers & Barbed Wire disabled")
+print("• NoClip Indicator: Green = ON, Black = OFF")
